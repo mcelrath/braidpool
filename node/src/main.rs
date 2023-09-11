@@ -1,8 +1,11 @@
 use clap::Parser;
 use std::error::Error;
+use std::path::PathBuf;
+use std::str::FromStr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
+mod braid;
 mod cli;
 mod connection;
 mod protocol;
@@ -11,8 +14,12 @@ mod protocol;
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = cli::Cli::parse();
 
-    let datadir = args.datadir;
-    println!("Using braid data directory: {}", datadir.display());
+    let datadir = PathBuf::from_str(shellexpand::full(&args.datadir).unwrap().to_mut()).unwrap();
+    if datadir.exists() {
+        println!("Using existing data directory: {}", datadir.display());
+    } else {
+        braid::Braid::open(datadir);
+    }
 
     setup_tracing()?;
 
