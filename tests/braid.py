@@ -422,15 +422,21 @@ def layout(cohort, all_parents, bead_work=None, previous_cohort_tips=None):
     extended_parents = reverse(extended_children)
     for key, value in previous_cohort_tips.items():
         pos[key] = [-1, value[1]] # add the position of tips from the previous cohort as (-1, y_coord) 
-    
+    min_height = 0
     # Place remaining beads in work sorted order (lowest work at top)
     for bead in sorted(set(parents) - set(hwpath),
                        key=work_sort_key(parents, children, bead_work), reverse=True):
         x = proposed_x[bead]
         y = 0
+        dist = 0
 
         while True:
-            y += 1
+            dist += 1
+            if y <= 0:
+                y += dist
+            else:
+                y -= dist
+            min_height = min(min_height, y)
             if [x,y] in pos.values(): continue
 
             # Create a list of all lines on the graph including the proposed <bead> position [x,y]
@@ -449,7 +455,7 @@ def layout(cohort, all_parents, bead_work=None, previous_cohort_tips=None):
         lines += new_lines
     cohort_tips = tips(parents, children)
     tips_pos = {tip: pos[tip] for tip in cohort_tips}
-    return pos, tips_pos
+    return pos, tips_pos, min_height
 
 def load_braid(filename):
     """ Load a JSON file containing a braid.
