@@ -646,7 +646,18 @@ class Braid:
         children = braid.reverse(parents)
         cohorts  = list(braid.cohorts(parents, children))
         hwpath   = braid.highest_work_path(parents, children)
-        layouts  = [braid.layout(c, parents) for c in cohorts]
+        # layouts  = [braid.layout(c, parents) for c in cohorts]
+        layouts  = []
+        tips_pos = {} # stores positions of the tips from the previous cohort
+        minimum_height = 0
+        # layout() now returns the positions of beads as well as positions of tips required for placing the beads in the next cohort.
+        for c in cohorts:
+            layout, tips_pos, min_height = braid.layout(c, parents, None, tips_pos)
+            minimum_height = min(minimum_height, min_height)
+            layouts.append(layout)
+        for layout in layouts:
+            for key, value in layout.items():
+                layout[key] = (value[0], value[1] - minimum_height)
         layout   = {}
         startx   = 0
         # Put all cohorts together in one layout map
