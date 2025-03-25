@@ -383,7 +383,7 @@ def layout(cohort, all_parents, bead_work=None, previous_cohort_tips=None):
         proposed_x[bead] = min_x
 
     # Get the sub-DAG for this cohort.
-    all_children      = reverse(all_parents) # children dict of he whole braid
+    all_children      = reverse(all_parents) # children dict of the whole braid
     prev_cohort_edges = {k: v for k, v in all_children.items() if k in previous_cohort_tips} if previous_cohort_tips else {} # extract connectivity with the tips of previous cohort
     parents           = dict(sub_braid(cohort, all_parents).items())
     children          = reverse(parents)
