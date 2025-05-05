@@ -302,6 +302,8 @@ class Node:
             self.calc_target = self.calc_target_simple_asym
         elif target_algo == "simple_asym_damped":
             self.calc_target = self.calc_target_simple_asym_damped
+        elif target_algo == "zeno":
+            self.calc_target = self.calc_target_zeno
 
     def __str__(self):
         return f"<Node {self.nodeid}>"
@@ -413,6 +415,45 @@ class Node:
     def calc_target_harmonic(self, parents):
         """Geometric‑mean difficulty of the parents, expressed as a *target*."""
         return len(parents)*MAX_HASH // sum(MAX_HASH // p.target for p in parents)
+
+    def calc_target_zeno(self, parents):
+        """ Calculate a target based on the number of parents using the Zeno's
+        paradox algorithm. That is, calculate a*lambda for the window and adjust
+        the target to be halfway between the previous target and the desired
+        target. Because this is a moving average algorithm, we want that after
+        TARGET_NB beads we've moved by half.
+
+        This seems to get the most-likely value in the resultant histogram of
+        NB correct but the median is shifted up to about 2.84. I can adjust
+        TARGET_NB to bring it down though.
+
+        This still does not reflect the asymmetry of the distribution and
+        depletes the 1 bin while creating many larger cohorts.
+        """
+        if len(self.braid.cohorts) < TARGET_NC:
+            return self.target
+        allbeads = [b for c in self.braid.cohorts[-TARGET_NC:] for b in c]
+        Nb = len(allbeads)
+        Nc_increase = 1
+        while Nb <= TARGET_NC*Nc_increase:
+            Nc_increase += 1
+            if TARGET_NC*Nc_increase > len(self.braid.cohorts):
+                return self.target
+            allbeads = [b for c in self.braid.cohorts[-TARGET_NC*Nc_increase:] for b in c]
+            Nb = len(allbeads)
+        R = Nb / TARGET_NC / Nc_increase
+        x_avg = Nb*MAX_HASH // sum(MAX_HASH // b.target for b in allbeads)
+        z = W(R-1) # = a lambda x
+        alambda = int(MAX_HASH*z.real/x_avg)
+        #if self.nodeid == 0:
+        #    print(f"alambda = {alambda:12} x_avg = {x_avg:32}")
+
+        # Given the above a*lambda, the x at z_* would be:
+        z_star = Fraction(W(float(TARGET_NB / TARGET_NC - 1)).real)
+        x_star = MAX_HASH*z_star.numerator//z_star.denominator//alambda
+
+        x_parents = self.calc_target_harmonic(parents)
+        return MAX_HASH // (MAX_HASH // x_avg + MAX_HASH // x_star)*2 # FIXME factor due to NB/NC
 
     def calc_target_fixed(self, parents):
         """ Use a fixed target (constant difficulty) """
@@ -1565,7 +1606,37 @@ class Braid:
         else:
             plt.show()
 
-def run_stats(filename, nodes=25, beads=100, peers=4, target=239, log=False, random_seed=1):
+    def alambda(self, Nc):
+        """
+        Estimate the parameter a*λ from historical data.
+
+        Using the fact that $N_B$ in one cohort is distributed geometrically
+        (essentially we're asking whether there has been a quiescent period of
+        size $a$) we can use the histogram of $N_B$ in a single cohort to
+        estimate $a\lambda$. This is closely related to a KS test.
+
+        A second way to estimate $a\lambda$ is to use $\mathbb{E}[N_B/N_C] = 1 +
+        a\lambda x e^{a\lambda x}$ and computing the average $x$.
+        """
+        allbeads = [b for c in self.cohorts[-Nc:] for b in c]
+        Nb = len(allbeads)
+        R = Nb / Nc
+        # Construct a histogram of N_B for the last ncwindow cohorts
+        #nb_hist = [len(cohort) for cohort in braid.cohorts[-ncwindow:]]
+        # Extract the slope of this histogram
+        # TODO
+
+        # Compute the harmonic average x over the last ncwindow cohorts
+        # We call this function pretending everything in the these cohorts is a
+        # parent -- it's the same calculation
+        #x = <node>.calc_target_harmonic([b for c in self.cohorts[-ncwindow:] for b in c])
+        x = Nb*MAX_HASH // sum(MAX_HASH // b.target for b in allbeads)
+        z = W(R-1)
+        return MAX_HASH*z.real/x
+
+# Once we have alambda, we can use it to estimate the
+
+def run_stats(filename, nodes=25, beads=100, peers=4, target=241, log=False, random_seed=1):
     """
     Run statistics to evaluate different difficulty adjustment algorithms.
 
@@ -1710,7 +1781,7 @@ def main():
         default = False)
     parser.add_argument("-t", "--target",
         help="Target difficulty exponent t where T=2**t-1",
-        default=239)
+        default=241)
     parser.add_argument("-b", "--beads",
         help="Number of beads to simulate",
         default=50)
@@ -1734,7 +1805,7 @@ def main():
         default=TARGET_DAMPING)
     parser.add_argument("-A", "--algorithm",
         help="Select the Difficulty Algorithm ('fixed', 'exp', 'parents', 'simple', 'pid', 'model', 'simple_asym', "
-             "'simple_asym_damped')",
+             "'simple_asym_damped', 'zeno')",
         default="exp")
     parser.add_argument("-S", "--stats", action=BooleanOptionalAction,
         help="Run statistics to evaluate difficulty adjustment algorithms",
