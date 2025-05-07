@@ -89,8 +89,16 @@
 %           2. Timestamps
 
 
-\documentclass[mathserif,usenames,dvipsnames,svgnames,table]{beamer}
+\documentclass[tikz,mathserif,usenames,dvipsnames,svgnames,table]{beamer}
+\usepackage{tikz}
+\usepackage{listings, listings-rust}
+\lstset{basicstyle=\tiny\ttfamily}
 \usepackage{color}             % colo(u)rs
+\definecolor{cohort0}{rgb}{0.8509803921568627, 0.37254901960784315, 0.00784313725490196}% orangeish
+\definecolor{cohort1}{rgb}{0.4588235294117647, 0.4392156862745098, 0.7019607843137254}  % purplish
+\definecolor{cohort2}{rgb}{0.10588235294117647, 0.6196078431372549, 0.4666666666666667} % greenish
+\definecolor{cohort3}{rgb}{0.9058823529411765, 0.1607843137254902, 0.5411764705882353}  % pinkish
+\definecolor{sibling}{rgb}{0.4, 0.6509803921568628, 0.11764705882352941}                % light greenish
 \definecolor{range}{rgb}{0.922,0,0}
 \definecolor{sl}{rgb}{0,0.5,0}
 %\usepackage{mathtimes}
@@ -237,7 +245,7 @@
 %}
 
 \date[BTC++ Austin, May 8 2025] % (optional, should be abbreviation of conference name)
-{BTC++ Austin\\ May 8 2025\\\\bob.mcelrath@gmail.com}
+{BTC++ Austin\\ May 8 2025\\ bob.mcelrath@gmail.com}
 % - Either use conference name or its abbreviation.
 % - Not really informative to the audience, more for people (including
 %   yourself) who are reading the slides online
@@ -277,23 +285,15 @@
 
 \begin{frame}
     \includegraphics[scale=0.25]{braid.jpg}
-    \begin{columns}%[h]
-      \begin{column}{6cm}
-          \titlepage
-      \end{column}
-      %\begin{column}{6cm}
-      %    \begin{center}
-      %        \includegraphics[scale=0.5]{solidx_logo}
-      %    \end{center}
-      %\end{column}
-    \end{columns}
+
+    \titlepage
 \end{frame}
 
 \section{Introduction}
 \subsection{Introduction}
 %===============================================================================
 \begin{frame}{}
-    Braidpool is a (proposal for) a {\it \color{ForestGreen} decentralized
+    Braidpool will be a {\it \color{ForestGreen} decentralized
     mining pool} which separates a mining pool into these components:
     \begin{itemize}
         \item Device monitoring
@@ -324,182 +324,281 @@
 
 \end{frame}
 %===============================================================================
-\begin{frame}{Simulations}
-    \includegraphics[scale=0.35]{T_C_x.png}
-\end{frame}
-%===============================================================================
 \begin{frame}{Outline}
     \begin{itemize}
-        \item Shares and Weak Blocks
+        \item The Braid
             \begin{itemize}
+                \item Timeless consensus through cohorts
+                \item Highest Work Path
+                \item Simulations
+                \item Difficulty Adjustment
+            \end{itemize}
+        \item Committed Mempool
+            \begin{itemize}
+                \item Deterministic Block Templates
                 \item Metadata Commitments
                 \item Share Value
             \end{itemize}
-        \item Braid Consensus Mechansim
-            \begin{itemize}
-                \item Difficulty Retarget Algorithm
-                \item Miner-Selected Difficulty
-                \item Simple Sum of Descendant Work
-            \end{itemize}
-        \item Eltoo Payout Update
-            \begin{itemize}
-                \item Unspent Hasher Payment Output (UHPO)
-            \end{itemize}
-        \item Payout Update and Settlement Signing (FROST)
+        %\item Braid Consensus Mechansim
+        %    \begin{itemize}
+        %        \item Difficulty Retarget Algorithm
+        %        \item Miner-Selected Difficulty
+        %        \item Simple Sum of Descendant Work
+        %    \end{itemize}
+        %\item Eltoo Payout Update
+        %    \begin{itemize}
+        %        \item Unspent Hasher Payment Output (UHPO)
+        %    \end{itemize}
+        %\item Payout Update and Settlement Signing (FROST)
         %\item Transaction Selection
     \end{itemize}
 \end{frame}
 %===============================================================================
-\section{Shares}
-\subsection{Shares}
+\section{Braid}
+\subsection{Braid}
+\begin{frame}{What is a Braid?}
+    \begin{columns}[T]
+        \begin{column}{6cm}
+            \begin{center}
+                \includegraphics[scale=0.2]{../docs/thin\_braid.png}
+                \tiny A thin braid (high difficulty) with a ``diamond''
+                structure.
+            \end{center}
+            \begin{center}
+                \includegraphics[scale=0.2]{../docs/thick\_braid.png}
+                \tiny A thick braid (low difficulty) with multi-bead cohorts.
+            \end{center}
+        \end{column}
+        \begin{column}{6cm}
+            \begin{itemize}
+                \item A Directed Acyclic Graph (DAG) of {\it beads} (shares)
+                \item Beads must not name ancestors of their parents as parents
+                    (``incest'')
+                \item {\it
+                    \textcolor{cohort0}{C}\textcolor{cohort1}{o}\textcolor{cohort2}{h}\textcolor{cohort3}{o}\textcolor{cohort0}{r}\textcolor{cohort1}{t}\textcolor{cohort2}{s}}
+                    are sets of beads separated by graph cuts
+                \item Cohorts are a {\it total order} on the graph and represent consensus points.
+                \item The Highest Work Path (HWP) is indicated in the middle
+            \end{itemize}
+        \end{column}
+    \end{columns}
+\end{frame}
+%===============================================================================
+\begin{frame}{Braid Statistics (I): Latency $a$ is a ``clock''}
+    The arrival time of beads is Poisson distributed with mean $\mu_B = t\lambda x$:
+    \begin{equation}
+        P(t,k)
+        = \frac{(t \lambda x)^k e^{-t \lambda x}}{k!}
+    \end{equation}
+    We can model this as a sequence of time intervals of length $a$
+
+    \begin{center}
+        \begin{tikzpicture}[node distance=1cm]
+            % Draw 10 boxes horizontally.
+            % We give each box a fixed size so that we know its boundaries.
+            \foreach \i in {0,...,9} {
+                \node[draw, rectangle, minimum width=1cm, minimum height=1cm] (box\i) at (\i,0) {$a$};
+            }
+
+            % Draw an arrow below the boxes.
+            % Here we start a bit to the left of the first box and end a bit to the right
+            % of the last box so that the arrow spans across all boxes.
+            \draw[->, thick] (-0.5,-1) -- (9.5,-1)
+                node[midway, fill=white]{time};
+        \end{tikzpicture}
+    \end{center}
+
+    If a time interval $a$ passes with no beads produced, this gives enough time for beads to
+    propagate to nodes and be incorporated into a braid. This {\it statistically} defines a
+    ``cohort''.
+
+    The probability that $k=0$ beads are produced is $P(t, 0) = e^{-a\lambda x}$.
+
+\end{frame}
+%===============================================================================
+\begin{frame}{Braid Statistics (II): Expectation Value and Variance}
+    The number of cohorts in a time window also Poisson distributed with mean $\mu_C = P(t,
+    k=0)\mu_B$. We can then form the expectation value for the number of beads in $N_C$ cohorts:
+
+    \begin{equation}
+        \mathbb{E}\left[\frac{N_B}{N_C}\right] =
+        \mathbb{E}\left[\frac{T_C}{T_B}\right] =
+        \lambda x \mathbb{E}[T_C]
+        = 1 + a\lambda x e^{a\lambda x}
+        %\qquad {\rm where} \qquad
+        %\overset{\displaystyle T_B = T/N_B}{T_C = T/N_C}
+    \end{equation}
+    where
+    \begin{equation}
+        \mathbb{E}[T_C] = \frac{1}{\lambda x} + a e^{a\lambda x}
+    \end{equation}
+    and the variance is
+    \begin{equation}
+        {\rm Var}\left[\frac{N_B}{N_C}\right] = \frac{\mu_B}{\mu_C^2} + \frac{\mu_B^2}{\mu_C^3}
+    \end{equation}
+    These are the {\it exact} behavior of a mining network (including bitcoin!) at constant hashrate
+    $\lambda$ and latency $a$.
+\end{frame}
+%===============================================================================
+\begin{frame}{Braid Statistics (III): Target Difficulty}
+    The location of the minimum in $T_C$ is given by
+    \begin{equation}
+        \frac{\partial T_C}{\partial x}=0
+        \qquad
+        \implies
+        \qquad
+        x = x_0 = \frac{2 W\left(\frac12\right)}{a\lambda} \simeq \frac{0.7035}{a \lambda}
+    \end{equation}
+    where $W(z)$ is the Lambert W function (the solution to $z = W e^W$). We can plug this into
+    $N_B/N_C$ to obtain
+    \begin{equation}
+        \left.\frac{N_B}{N_C}\right|_{x_0} = 1 + \frac{1}{2W(\frac12)} \simeq 2.4215
+    \end{equation}
+    at this minimum, the mean cohort time in units of $a$ is
+    \begin{equation}
+        \frac{T_{C,min}}{a} = \frac{1}{a\lambda x_0} + e^{a\lambda x_0} =
+            \frac{1}{2 W(\frac12)} + \frac{1}{4 W(\frac12)} \simeq 3.44
+    \end{equation}
+    This represents having the {\it most-frequent} graph cuts and is {\it independent of
+    timestamps}.
+
+\end{frame}
+%===============================================================================
+\begin{frame}{Braid Simulations I}
+    \begin{tikzpicture}[overlay, remember picture]
+    \node[anchor=center] at (current page.center) {
+        \includegraphics[scale=0.44]{T_C_x.png}
+    }
+    \end{tikzpicture}
+\end{frame}
+%===============================================================================
+\begin{frame}{Braid Simulations II: Beads within 7 cohorts}
+        \includegraphics[scale=0.30]{NB\_NC7.png}
+\end{frame}
+%===============================================================================
+\begin{frame}{Braid Summary}
+    What's going on here?
+
+    \begin{itemize}
+        \item We're using measured latency $a$ as a {\it clock}
+        \item This is extremely resistant to manipulation
+        \item We can't measure the hashrate $\lambda$ or latency $a$ without timestamps, but we
+            don't need to.
+        \item Instead we measure the {\it product} $a\lambda$ and adjust to it.
+        \item By targeting the most-frequent graph cuts, we have a parameter free target for our
+            difficulty adjustment
+
+    \end{itemize}
+\end{frame}
+%===============================================================================
+\section{Beads (Shares)}
+\subsection{Beads (Shares)}
 \begin{frame}{Shares and Weak Blocks}
     \begin{itemize}
-        \item Braidpool accounts for mining "Shares" (also called ``Weak Blocks'')
-
-        \item A "share" does not meet bitcoin's difficulty target $t_b$ but
-            meets some lesser difficulty target $t$. Shares are a bitcoin block
-            header which commits to additional data:
-    \end{itemize}
-
-    \includegraphics[scale=0.34]{bead\_fields.png}
-%    \scriptsize
-%    \begin{block}{Bead Fields}
-%\begin{semiverbatim}
-%    Version|Previous Block Hash|Merkle Root|Timestamp|Target|Nonce
-%
-%    Coinbase Transaction|Merkle Sibling|Merkle Sibling| ...
-%
-%    Payout Update|Merkle Sibling|Merkle Sibling| ...
-%
-%    Braidpool Metadata
-%
-%    Uncommitted Metadata
-%\end{semiverbatim}
-%\end{block}
-
-
-%\begin{columns}%[h]
-%  \begin{column}{6cm}
-%    \begin{itemize}
-%        \item The network is reliable
-%        \item Latency is zero {\only<2->{\color{red}(scaling)}}
-%        \item Bandwidth is infinite
-%        \item Topology doesn't change
-%    \end{itemize}
-%  \end{column}
-%  \begin{column}{6cm}
-%    \begin{itemize}
-%        \item The network is secure
-%        \item There is one administrator
-%        \item Transport cost is zero
-%        \item The network is homogeneous
-%    \end{itemize}
-%  \end{column}
-%\end{columns}
-%\vspace{0.3cm}
-%{\onslide<2->{\it
-%``These assumptions ultimately prove false, resulting either in the failure of the
-%system, a substantial reduction in system scope, or in large, unplanned expenses
-%required to redesign the system to meet its original goals.''}}
-\end{frame}
-%===============================================================================
-\begin{frame}{Share Commitments}
-    \begin{itemize}
-        \item A share must commit to the additional data required by Braidpool
-            in the coinbase transaction:
-
-    \end{itemize}
-
-    \scriptsize
-    \begin{semiverbatim}
-    OutPoint(Value:0, scriptPubKey OP\_RETURN "BP"+<Braidpool Commitment>)
-    OutPoint(Value:<block reward>, scriptPubKey <P2TR pool\_pubkey>)
-    \end{semiverbatim}
-    \normalsize
-
-    where
-
-    \\
-
-    {\tt Braidpool Commitment} = hash({\tt Braidpool Metadata})
-    \begin{itemize}
-        \item This prevents third parties from modifying consensus-critical data
-            in a share
+        \item Beads (shares) are ``weak blocks'':they may not meet bitcoin's difficulty target $x_b$
+            but meets some lesser difficulty target $x$.
+        \item A Bead (share) is a {\it full bitcoin block} including transactions
+        \item Pool members need to know with {\bf certainty} that other beads {\it could have been}
+            bitcoin blocks had they met the target.
+        \item Beads need to be {\it small} and quick to validate
+        \item How do you get beads to be small?
+            \begin{itemize}
+                \item[$\Rightarrow$] by omitting transactions and the coinbase!
+            \end{itemize}
+        \item How do you validate something you omitted?
+            \begin{itemize}
+                \item[$\Rightarrow$] by committing to transactions and {\it deterministically
+                    computing} the template based on previously-seen data
+            \end{itemize}
     \end{itemize}
 \end{frame}
 %===============================================================================
-\begin{frame}{Share Metadata}
-    \begin{columns}
-        \column{\dimexpr\paperwidth-10pt}
-        \includegraphics[scale=0.34]{metadata\_table.png}
-    \end{columns}
+\begin{frame}{Bead (Share) Structure}
+\lstinputlisting[language=Rust]{bead.rs}
+\lstinputlisting[language=Rust]{committedmetadata.rs}
+\lstinputlisting[language=Rust]{uncommittedmetadata.rs}
+\begin{itemize}
+    \item We {\it compute} the coinbase transaction and block template independently on each node
+        in order to validate a bead
+\end{itemize}
+\end{frame}
+%===============================================================================
+\begin{frame}{What's a Committed Mempool?}
     \begin{itemize}
-        \item The additional timestamps provide required higher resolution bead
-            timing information
+        \item A restricted, release-tagged instance of bitcoind: no network access communicates over
+            IPC, used only for its mempool
+        \item Goal is to {\it prevent} block template outsourcing
+        \item Every bead has an associated committed mempool implied by its parents.
+        \item All transactions not yet mined in all ancestors are already in its committed mempool.
+        \item Add the 2-5 transactions committed by this bead.
+        \item Compute block template with any {\it deterministic} algorithm.
+    \end{itemize}
+\end{frame}
+%===============================================================================
+\begin{frame}{Advantages of a Committed Mempool}
+    \begin{itemize}
+        \item ALL Transactions are fully validated
+            \begin{itemize}
+                \item[$\Rightarrow$] All nodes know with confidence that all {\it other} beads are
+                    not going to withhold blocks or generate orphans
+            \end{itemize}
+        \item ALL Nodes broadcast blocks as soon as they see the Bead
+            \begin{itemize}
+                \item[$\Rightarrow$] Impact of low bandwith or high latency nodes is removed
+            \end{itemize}
+        \item Transaction selection is a legal liability and no one wants to do it. Ethereum has
+            only MEVil and Compliant miners.
+            \begin{itemize}
+                \item[$\Rightarrow$] Solve this problem by making {\it everyone} do it
+            \end{itemize}
+        \item Beads are {\it small} $\sim 20{\rm kb}$ so don't cause huge latency problems
+        \item Most of the data for block validation is already known and re-usable.
     \end{itemize}
 \end{frame}
 %===============================================================================
 \begin{frame}{Share Value}
+    The fundamental unit of reward in Bitcoin is sha256d hashes computed. This is ``work''. But
+    because of difficulty targeting, we need to allow shares to have different amounts of work.
+
+    \vspace{0.2cm}
+
+    Version 1 will use a full-proportional version of PPLNS.
     \begin{itemize}
-        \item Braidpool will use the {\it \color{ForestGreen} Full Proportional}
-            payout method (all rewards and fees distributed proportionally to
-            hashers)
-        \item Braidpool shares have an internal value which is equal to the
-            work $w$ -- the estimate of the number of sha256d hashes performed
-            (TeraHash Coin), weighted by the probability that the DAG generated
-            an orphan:
-    \end{itemize}
-
-
-$$
-P_{\ge 2}(T_C) = \sum_{k=2}^\infty \frac{\lambda(T_C)^k e^{-\lambda(T_C)}}{k!} = 1 - e^{-\lambda(T_C)} (1+\lambda(T_C))
-\simeq \frac{\lambda^2(T_C)}{2}
-$$
-
-$$
-\lambda(T_C) = \frac{T_C}{\rm block\ time} \left(\frac{\rm pool\ hashrate}{\rm total
-\ hashrate}\right)
-$$
-
-$$
-{\rm (share)} \qquad \qquad w = \frac{1}{x (1-P_{\ge 2})}
-$$
-
-
-\end{frame}
-%===============================================================================
-\begin{frame}{Share Tally}
-    \begin{itemize}
-        \item Shares are a statistical estimate of {\it work} (number of sha256d
-            calculations performed)
-        \item The BTC value of shares is only known at difficulty adjustment
-            boundaries (every 2016 blocks $\sim$ 2 weeks)
-        \item Shares can only be paid out {\it after} a difficulty adjustment
-            window closes
-        \item Shares can be sent to a new address (to effect instant payout via
-            atomic swap or exchange trade)
+        \item Expire old shares (window based on time and/or or work)
+        \item Beads with very large cohorts can't pay everyone: large cohorts are an orphan risk.
+            \begin{itemize}
+                \item[$\Rightarrow$] Sort beads based on:
+                    \begin{itemize}
+                        \nitem simple sum of descendant work
+                        \nitem simple sum of ancestor work
+                        \nitem hash value (``luck'')
+                    \end{itemize}
+                \item[$\Rightarrow$] For $N_B \gsim 20$, lowest work beads won't
+                    be rewarded
+            \end{itemize}
+        \item We're researching something better. PPLNS sucks.
     \end{itemize}
 \end{frame}
 %===============================================================================
-\section{Consensus}
-\subsection{Difficulty Retarget Algorithm}
-\begin{frame}{Consensus on a Directed Acyclic Graph (braid) }
-    Allowing blocks to have multiple parents creates a:
-    \begin{description}
-        \nitem[Directed] Blocks have parents, parents cannot refer to children
-        \nitem[Acyclic]  A cycle is cryptographically impossible
-        \nitem[Graph]    Structure is non-linear (no ``height'')
-    \end{description}
-    \vspace{0.5cm}
-    %Fun facts about DAGs
-    \begin{itemize}
-        \nitem A DAG can be {\it partial ordered} in linear time.
-        \nitem We have to make a restriction relative to a more general dag, so
-        I'm going to name this data structure a {\it braid}.
-        %\nitem \FIXME{foo}
-        %\nitem Orphans can be eliminated entirely
-    \end{itemize}
-\end{frame}
+%\section{Consensus}
+%\subsection{Difficulty Retarget Algorithm}
+%\begin{frame}{Consensus on a Directed Acyclic Graph (braid) }
+%    Allowing blocks to have multiple parents creates a:
+%    \begin{description}
+%        \nitem[Directed] Blocks have parents, parents cannot refer to children
+%        \nitem[Acyclic]  A cycle is cryptographically impossible
+%        \nitem[Graph]    Structure is non-linear (no ``height'')
+%    \end{description}
+%    \vspace{0.5cm}
+%    %Fun facts about DAGs
+%    \begin{itemize}
+%        \nitem A DAG can be {\it partial ordered} in linear time.
+%        \nitem We have to make a restriction relative to a more general dag, so
+%        I'm going to name this data structure a {\it braid}.
+%        %\nitem \FIXME{foo}
+%        %\nitem Orphans can be eliminated entirely
+%    \end{itemize}
+%\end{frame}
 %===============================================================================
 %\begin{frame}{Braid Terminology}
 %  \begin{center}
@@ -544,28 +643,6 @@ $$
 %    \end{itemize}
 %\end{frame}
 %===============================================================================
-\begin{frame}{The Cohort}
-
-    {\it Cohorts} define a {\it total order} such that {\it all} beads are ancestors
-    of the next cohort, and descendants of the previous cohort:
-    \begin{center}
-        \includegraphics[scale=0.4]{thinbraid.png}
-    \end{center}
-    \vspace{0.1cm}
-    \begin{center}
-        \includegraphics[scale=0.4]{thickbraid.png}
-    \end{center}
-    Cohorts give us a way to measure the latency of the network WRT the bead
-    rate and are used in the retarget algorithm, and in optimizing tx conflict
-    selection.
-%    Major contribution of this work: the algorithm to find cohorts.
-%    \begin{block}{}
-%        \begin{center}
-%            \it A cohort is the analog of a block
-%        \end{center}
-%    \end{block}
-\end{frame}
-%===============================================================================
 %\begin{frame}{Let's Simulate!}
 %    Let's build a ``toy model'' of the Bitcoin network.
 %    \begin{itemize}
@@ -585,9 +662,9 @@ $$
 %    \end{center}
 %\end{frame}
 %===============================================================================
-\begin{frame}{Cohort Time vs Difficulty}
-    \includegraphics[scale=0.4]{fastest_cohort}
-\end{frame}
+%\begin{frame}{Cohort Time vs Difficulty}
+%    \includegraphics[scale=0.4]{fastest_cohort}
+%\end{frame}
 %===============================================================================
 %\begin{frame}{Cohort Time vs Difficulty}
 %    \includegraphics[scale=0.4]{fastest_cohort2}
@@ -617,56 +694,56 @@ $$
 %    \end{overprint}
 %\end{frame}
 %===============================================================================
-\begin{frame}{Difficulty Target I}
-    The curve resulting from this simulation is extremely well approximated by
-    $$
-    T(x) = \frac{1}{\lambda x} + a e^{a \lambda x}
-    $$
-    %\hline
-    \begin{columns}[T]
-      \begin{column}{6.5cm}
-          \begin{description}[xxx] % Argument is max width of item argument
-              \nitem[$T$] Cohort time
-              \nitem[$\lambda$] Hash rate (hashes per second)
-          \end{description}
-      \end{column}
-          \vline
-          \begin{column}{6cm}
-              \begin{description}[xxx]
-                  \nitem[$x$] Target hash value
-                  \nitem[$a$] Network ``size'' parameter (in seconds)
-              \end{description}
-          \end{column}
-    \end{columns}
-
-    Let's approximate this in the blockchain limit $x\to 0$:
-    $$
-    T(x) = \frac{1}{\lambda x} + a + \mathcal{O}(x)
-    $$
-    the quantity $a$ is the {\it increase in effective block time} due to network
-    latency effects.  This is to say that the actual cohort time is slightly
-    longer than expected from the hashrate.
-
-    %$a$ is the orphan rate, or ``miner utilization''.
-\end{frame}
+%\begin{frame}{Difficulty Target I}
+%    The curve resulting from this simulation is extremely well approximated by
+%    $$
+%    T(x) = \frac{1}{\lambda x} + a e^{a \lambda x}
+%    $$
+%    %\hline
+%    \begin{columns}[T]
+%      \begin{column}{6.5cm}
+%          \begin{description}[xxx] % Argument is max width of item argument
+%              \nitem[$T$] Cohort time
+%              \nitem[$\lambda$] Hash rate (hashes per second)
+%          \end{description}
+%      \end{column}
+%          \vline
+%          \begin{column}{6cm}
+%              \begin{description}[xxx]
+%                  \nitem[$x$] Target hash value
+%                  \nitem[$a$] Network ``size'' parameter (in seconds)
+%              \end{description}
+%          \end{column}
+%    \end{columns}
+%
+%    Let's approximate this in the blockchain limit $x\to 0$:
+%    $$
+%    T(x) = \frac{1}{\lambda x} + a + \mathcal{O}(x)
+%    $$
+%    the quantity $a$ is the {\it increase in effective block time} due to network
+%    latency effects.  This is to say that the actual cohort time is slightly
+%    longer than expected from the hashrate.
+%
+%    %$a$ is the orphan rate, or ``miner utilization''.
+%\end{frame}
 %===============================================================================
-\begin{frame}{Difficulty Target II}
-
-    The parameter $\lambda$ is the hash rate and can be obtained along with $a$:
-    $$
-    \lambda = \frac{N_B}{x T_C N_C}; \qquad a = T_C W\left(\frac{T_C}{T_B} - 1\right)
-    $$
-    where $N_B$ is the number of beads and $N_C$ is the number of cohorts.  $W(z)$ is the
-    {\it Lambert W function}\footnote{\tt
-    https://en.wikipedia.org/wiki/Lambert\_W\_function}.
-    With these in hand we can compute the location of the minimum
-    $$
-    x_0 = \frac{2 W\left(\frac12\right)}{a \lambda} = \frac{0.7035}{a\lambda}
-    $$
-
-    This is relatively independent of network topology.
-
-\end{frame}
+%\begin{frame}{Difficulty Target II}
+%
+%    The parameter $\lambda$ is the hash rate and can be obtained along with $a$:
+%    $$
+%    \lambda = \frac{N_B}{x T_C N_C}; \qquad a = T_C W\left(\frac{T_C}{T_B} - 1\right)
+%    $$
+%    where $N_B$ is the number of beads and $N_C$ is the number of cohorts.  $W(z)$ is the
+%    {\it Lambert W function}\footnote{\tt
+%    https://en.wikipedia.org/wiki/Lambert\_W\_function}.
+%    With these in hand we can compute the location of the minimum
+%    $$
+%    x_0 = \frac{2 W\left(\frac12\right)}{a \lambda} = \frac{0.7035}{a\lambda}
+%    $$
+%
+%    This is relatively independent of network topology.
+%
+%\end{frame}
 %===============================================================================
 %\begin{frame}{Analysis IV}
 %    \begin{block}{}
@@ -704,91 +781,91 @@ $$
 %    \end{itemize}
 %\end{frame}
 %===============================================================================
-%\subsection{Miner-Selected Difficulty}
-\begin{frame}{Miner-Selected Difficulty}
+\section{Future Work}
+\subsection{Future Work}
+\begin{frame}{Miner-Selected Difficulty and Sub-Pools}
     \begin{itemize}
         \item As long as the miners chosen difficulty is $x_b < x < x_0$ there's
             nothing wrong with allowing miners to choose their own, since we
             know how to add work.
-        \item Braidpool will choose your difficulty such that all miners have
-            the same {\it variance}.
+        \item Braidpool will choose your difficulty for you such that all miners have the same {\it
+            variance}. This cannot be enforced by consensus.
         \item Miners too small to achieve constant variance will be grouped into
             a {\it sub-pool}, which:
             \begin{itemize}
-                \item has UHPO outputs in the parent pool as the
-                    outputs managed by the sub-pool
+                \item has outputs in the parent pool as the outputs managed by the sub-pool
                 \item has an independent Braid from the parent pool
             \end{itemize}
     \end{itemize}
 \end{frame}
 %===============================================================================
 %\subsection{SSDW}
-\begin{frame}{Conflict Resolution: Simple Sum of Descendant Work}
-    For braids having siblings (diamond-like and higher-order structures) where
-    conflict resolution is important will use the Simple Sum of Descendant Work
-$$
-    w_{\rm SSDW} = \sum_{i \in \rm descendants} w_i = \sum_{i \in \rm
-    descendants} \frac{1}{x_i (1-P_{\ge 2}(T_{C,i}))}
-$$
-\begin{itemize}
-    \item Only work within a cohort matters
-    \item In the event of a tie, the smaller hash (``luck'') is used.
-    \item We only need conflict resolution if Braidpool has its own
-        transactions.
-    \item Graph structure is manipulable at zero cost, so we ignore it
-\end{itemize}
-
-
-\end{frame}
+%\begin{frame}{Conflict Resolution: Simple Sum of Descendant Work}
+%    For braids having siblings (diamond-like and higher-order structures) where
+%    conflict resolution is important will use the Simple Sum of Descendant Work
+%$$
+%    w_{\rm SSDW} = \sum_{i \in \rm descendants} w_i = \sum_{i \in \rm
+%    descendants} \frac{1}{x_i (1-P_{\ge 2}(T_{C,i}))}
+%$$
+%\begin{itemize}
+%    \item Only work within a cohort matters
+%    \item In the event of a tie, the smaller hash (``luck'') is used.
+%    \item We only need conflict resolution if Braidpool has its own
+%        transactions.
+%    \item Graph structure is manipulable at zero cost, so we ignore it
+%\end{itemize}
+%
+%
+%\end{frame}
 %===============================================================================
-\section{Payouts}
-\subsection{Payouts}
-\begin{frame}{Payout Update}
-    From the Eltoo paper (Decker, Russell, Osuntokun):
-    \includegraphics[scale=0.18]{eltoo.png}
-    \begin{itemize}
-        \item $T_{u,i}$ takes previous $T_{u,i-1}$ output and a new coinbase as
-            input (optimistic case, single Schnorr signature)
-        \item $T_{s,i}$ is the UHPO transaction tree (spent via tapscript)
-    \end{itemize}
-\end{frame}
+%\section{Payouts}
+%\subsection{Payouts}
+%\begin{frame}{Payout Update}
+%    From the Eltoo paper (Decker, Russell, Osuntokun):
+%    %\includegraphics[scale=0.18]{eltoo.png}
+%    \begin{itemize}
+%        \item $T_{u,i}$ takes previous $T_{u,i-1}$ output and a new coinbase as
+%            input (optimistic case, single Schnorr signature)
+%        \item $T_{s,i}$ is the UHPO transaction tree (spent via tapscript)
+%    \end{itemize}
+%\end{frame}
 %===============================================================================
-\begin{frame}{Payout Signing}
-    \begin{itemize}
-        \item Each payout update requires two keys: the Update Pubkey (P2TR) and
-            the Settlement Pubkey (in a tapscript).
-        \item These keys are generated by the distributed key generation phase
-            of FROST. All miners who successfully mined past blocks hold
-            FROST keyshares.
-        \item We may combine MuSig2 and FROST and use ROAST as well. (TBD)
-        \item After a bitcoin block is found, a FROST/ROAST signing ceremony is
-            kicked off among signing miners, for both the Update and Settlement
-            transactions, for the most recent unspent Braidpool coinbase at
-            least 100 blocks old.
-    \end{itemize}
-\end{frame}
+%\begin{frame}{Payout Signing}
+%    \begin{itemize}
+%        \item Each payout update requires two keys: the Update Pubkey (P2TR) and
+%            the Settlement Pubkey (in a tapscript).
+%        \item These keys are generated by the distributed key generation phase
+%            of FROST. All miners who successfully mined past blocks hold
+%            FROST keyshares.
+%        \item We may combine MuSig2 and FROST and use ROAST as well. (TBD)
+%        \item After a bitcoin block is found, a FROST/ROAST signing ceremony is
+%            kicked off among signing miners, for both the Update and Settlement
+%            transactions, for the most recent unspent Braidpool coinbase at
+%            least 100 blocks old.
+%    \end{itemize}
+%\end{frame}
 %===============================================================================
-\begin{frame}{Settlement Tx: Unspent Hasher Payment Output}
-    \begin{columns}[T]
-        \begin{column}{6cm}
-            \begin{itemize}
-                \item The UHPO ``settlement'' transaction fans out and pays
-                    everyone
-                \item This UHPO transaction is the analog of the ``adversarial
-                    close'' in Lightning
-                \item It is only broadcast in the case of catastrophic failure
-                    or shutdown of Braidpool
-                \item Management of this transaction is the analog of the ``UTXO
-                    Set'' for Braidpool.
-            \end{itemize}
-        \end{column}
-        \begin{column}{6.5cm}
-            \includegraphics[scale=0.3]{UHPO.png}
-        \end{column}
-    \end{columns}
-\end{frame}
+%\begin{frame}{Settlement Tx: Unspent Hasher Payment Output}
+%    \begin{columns}[T]
+%        \begin{column}{6cm}
+%            \begin{itemize}
+%                \item The UHPO ``settlement'' transaction fans out and pays
+%                    everyone
+%                \item This UHPO transaction is the analog of the ``adversarial
+%                    close'' in Lightning
+%                \item It is only broadcast in the case of catastrophic failure
+%                    or shutdown of Braidpool
+%                \item Management of this transaction is the analog of the ``UTXO
+%                    Set'' for Braidpool.
+%            \end{itemize}
+%        \end{column}
+%        \begin{column}{6.5cm}
+%            %\includegraphics[scale=0.3]{UHPO.png}
+%        \end{column}
+%    \end{columns}
+%\end{frame}
 %===============================================================================
-\begin{frame}{Derivatives and Instant Payout}
+\begin{frame}{Financial Instruments}
     \begin{itemize}
         \item We do not directly create any instant-payout (Lightning-like)
             method, instead we envision hashers trading shares for BTC
@@ -807,18 +884,19 @@ $$
 \subsection{Conclusions}
 \begin{frame}{General Timeline}
     \begin{itemize}
-        \item Braidpool V1
+        \item Braidpool V1: summer 2025
             \begin{itemize}
-                \item Peer-to-Peer Layer (Kulpreet Singh)
-                \item Braid Consensus (Bob McElrath)
-                \item Update/UHPO signing (Bob McElrath, Jesse Posner's FROST code from
-                    libsecp256k-zkp)
+                \item Node software (Bob McElrath with Summer of Bitcoin students:
+                    Abdullah Azeem, Aritra Majumder, Ansh Sharma, Mohd Zaid)
+                \item Dashboard software (Bob McElrath with Summer of Bitcoin students:
+                    Abhishek, David Borg, Priya Rani)
             \end{itemize}
         \item Braidpool V2
             \begin{itemize}
                 \item Transactions (sending/trading shares)
                 \item Latency optimization
                 \item Sub-Pools
+                \item Options-based payout mechanism
             \end{itemize}
     \end{itemize}
 \end{frame}
@@ -826,12 +904,8 @@ $$
 \begin{frame}{Summary/Conclusions}
     \begin{itemize}
         \item All the elements are present to construct a truly trustless decentralized
-            mining pool (Shares, Braid consensus, large multi-sigs)
-        \item The advent of Schnorr, FROST, ROAST, and MuSig2 were the missing piece
-        \item This UHPO proposal should be contrasted with the (semi-trusted)
-            Hub model originally proposed by Chris Belcher
-        \item Goal will be to get existing pools to run atop Braidpool, and
-            integrate with Stratum V2
+            mining pool (Shares, Braid consensus, PPLNS)
+        \item Demo!
     \end{itemize}
 \end{frame}
 %===============================================================================
