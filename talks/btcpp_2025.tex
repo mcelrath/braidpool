@@ -491,8 +491,8 @@
     \end{itemize}
 \end{frame}
 %===============================================================================
-\section{Beads (Shares)}
-\subsection{Beads (Shares)}
+\section{Beads (Shares and Committed Mempool)}
+\subsection{Beads (Shares and Committed Mempool)}
 \begin{frame}{Shares and Weak Blocks}
     \begin{itemize}
         \item Beads (shares) are ``weak blocks'':they may not meet bitcoin's difficulty target $x_b$
@@ -521,6 +521,23 @@
     \item We {\it compute} the coinbase transaction and block template independently on each node
         in order to validate a bead
 \end{itemize}
+\end{frame}
+%===============================================================================
+\begin{frame}{Different types of miners}
+    Imagine 4 different types of miners
+    \begin{itemize}
+        \item Profit maximizing miner
+        \item Empty block miner
+        \item Monkey JPEG miner taking fees out of band
+        \item BitAxe on a Raspberry Pi behind a dial-up line
+    \end{itemize}
+    These miners are {\it not the same} and will earn different revenues.
+    \vspace{0.2cm}
+    The social contract between pool members is that ``I'll pay you if you pay
+    me''. That implies that they have the same or similar ability to make
+    revenue and the only difference is their hashrate.
+    \vspace{0.2cm}
+    {\it We can make them the same through the Committed Mempool}
 \end{frame}
 %===============================================================================
 \begin{frame}{What's a Committed Mempool?}
@@ -578,6 +595,65 @@
             \end{itemize}
         \item We're researching something better. PPLNS sucks.
     \end{itemize}
+\end{frame}
+%===============================================================================
+\begin{frame}{Transaction Selection}
+    FIXME
+
+    \begin{itemize}
+        \item We need to ensure ALL shares correspond to actual blocks that
+            would actually pay us
+        \begin{itemize}
+            \item[$\Rightarrow$] We need to fully validate all txs in all shares
+        \end{itemize}
+
+    \end{itemize}
+    Larger OP\_RETURN must be stored by all nodes. It's great that it's not in
+    the UTXO set, but in a sense witness data is better because it can be
+    completely omitted and you can still validate the (historic) chain. This
+    proposal will ensure all blocks are full and our data storage requirements
+    grow at 500MB/day.
+
+    You can't compute txids without the OP\_RETURN data.
+
+    What if we elide the OP\_RETURN data by storing and serving a sha256
+    midstate that would allow you to compute the txid?
+
+    "Filtering" is censorship. If we can filter ordinals, runes, BTC-20 or
+    monkey jpegs effectively we can also filter the political enemies of your
+    local government, and they will try. Filters don't work and we shouldn't
+    pretend they do. It creates an existential threat that government will think
+    bitcoin {\it can} be filtered.
+
+    Parasitic assets are a bigger threat.
+
+    I'm okay with ~140 bytes OP\_RETURN for BitVM type uses, as long as BitVM
+    folks super pinky swear to not create parasitic assets.
+
+    Transaction order randomization?
+
+\end{frame}
+%===============================================================================
+\begin{frame}{Comparison to other projects}
+    \begin{itemize}
+        \item HydraPool (P2PoolV2) (jungly)
+            \begin{itemize}
+                \item Does not validate transactions: miners can't know if other
+                    hashers on the pool are paying them.
+                \item Difficulty adjustment is dependent on timestamps and
+                    easily manipulable
+                \item What to do with ``uncles'' is undecided.
+            \end{itemize}
+        \item Hashpool (Cashu eCash) (vnprc)
+            \begin{itemize}
+                \item Uses eCash tokens to pay miners
+                \item Would be great for paying small miners, but must be
+                    custodial
+                \item A similar custodial pool running atop Braidpool paying
+                    over Lightning would be most welcome
+            \end{itemize}
+    \end{itemize}
+
 \end{frame}
 %===============================================================================
 %\section{Consensus}
