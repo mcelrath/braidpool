@@ -573,6 +573,49 @@
     \end{itemize}
 \end{frame}
 %===============================================================================
+\begin{frame}{Transaction Selection}
+    \begin{itemize}
+        %\item We need to ensure ALL shares correspond to actual blocks that
+        %    would actually pay us
+        %\begin{itemize}
+        %    \item[$\Rightarrow$] We need to fully validate all txs in all shares
+        %\end{itemize}
+        \item Large OP\_RETURN must be stored forever by all nodes. (you can't
+            compute txids without it)
+        \item Trying to ``filter'' invites censorship attempts by regulators.
+            Thankfully it's almost entirely useless.
+        \item Braidpool mempool and can have different rules for its mempool.
+        \item Parasitic assets and DEXes are the real threat.
+            \begin{itemize}
+                \item[$\Rightarrow$] Bets that can be placed on secondary
+                    markets can exceed the block reward and incentivize games
+                \item[$\Rightarrow$] Order books on Bitcoin incentivize
+                    transaction ordering games
+                \item[$\Rightarrow$] Should we consider transaction order randomization?
+            \end{itemize}
+        \item I'm okay with ~140 bytes OP\_RETURN for ZKP type uses
+    \end{itemize}
+    %Larger OP\_RETURN must be stored by all nodes. It's great that it's not in
+    %the UTXO set, but in a sense witness data is better because it can be
+    %completely omitted and you can still validate the (historic) chain. This
+    %proposal will ensure all blocks are full and our data storage requirements
+    %grow at 500MB/day.
+
+    %You can't compute txids without the OP\_RETURN data.
+
+    %What if we elide the OP\_RETURN data by storing and serving a sha256
+    %midstate that would allow you to compute the txid?
+
+    %"Filtering" is censorship. If we can filter ordinals, runes, BTC-20 or
+    %monkey jpegs effectively we can also filter the political enemies of your
+    %local government, and they will try. Filters don't work and we shouldn't
+    %pretend they do. It creates an existential threat that government will think
+    %bitcoin {\it can} be filtered.
+
+    %Parasitic assets are a bigger threat.
+
+\end{frame}
+%===============================================================================
 \begin{frame}{Share Value}
     The fundamental unit of reward in Bitcoin is sha256d hashes computed. This is ``work''. But
     because of difficulty targeting, we need to allow shares to have different amounts of work.
@@ -597,43 +640,6 @@
     \end{itemize}
 \end{frame}
 %===============================================================================
-\begin{frame}{Transaction Selection}
-    FIXME
-
-    \begin{itemize}
-        \item We need to ensure ALL shares correspond to actual blocks that
-            would actually pay us
-        \begin{itemize}
-            \item[$\Rightarrow$] We need to fully validate all txs in all shares
-        \end{itemize}
-
-    \end{itemize}
-    Larger OP\_RETURN must be stored by all nodes. It's great that it's not in
-    the UTXO set, but in a sense witness data is better because it can be
-    completely omitted and you can still validate the (historic) chain. This
-    proposal will ensure all blocks are full and our data storage requirements
-    grow at 500MB/day.
-
-    You can't compute txids without the OP\_RETURN data.
-
-    What if we elide the OP\_RETURN data by storing and serving a sha256
-    midstate that would allow you to compute the txid?
-
-    "Filtering" is censorship. If we can filter ordinals, runes, BTC-20 or
-    monkey jpegs effectively we can also filter the political enemies of your
-    local government, and they will try. Filters don't work and we shouldn't
-    pretend they do. It creates an existential threat that government will think
-    bitcoin {\it can} be filtered.
-
-    Parasitic assets are a bigger threat.
-
-    I'm okay with ~140 bytes OP\_RETURN for BitVM type uses, as long as BitVM
-    folks super pinky swear to not create parasitic assets.
-
-    Transaction order randomization?
-
-\end{frame}
-%===============================================================================
 \begin{frame}{Comparison to other projects}
     \begin{itemize}
         \item HydraPool (P2PoolV2) (jungly)
@@ -642,7 +648,7 @@
                     hashers on the pool are paying them.
                 \item Difficulty adjustment is dependent on timestamps and
                     easily manipulable
-                \item What to do with ``uncles'' is undecided.
+                %\item What to do with ``uncles'' is undecided.
             \end{itemize}
         \item Hashpool (Cashu eCash) (vnprc)
             \begin{itemize}
@@ -651,6 +657,10 @@
                     custodial
                 \item A similar custodial pool running atop Braidpool paying
                     over Lightning would be most welcome
+            \end{itemize}
+        \item OCEAN/TIDES
+            \begin{itemize}
+                \item Blocks sent by creator and spot checked
             \end{itemize}
     \end{itemize}
 
