@@ -89,7 +89,7 @@ const Dashboard = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#0e1621]">
+    <div className="min-h-screen bg-[#121212]">
       <Header
         title="Braidpool"
         currentPage={currentPage}
