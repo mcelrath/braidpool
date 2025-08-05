@@ -1180,18 +1180,35 @@ impl Server {
                             let (reader, writer) = stream.into_split();
                             //Notification sender to the `Notifier` task
                             let notification_sender = notification_sender.clone();
-                            //Adding the downstream mining map to global mapper
-                            mining_job_map.lock().await.insert(peer_addr.to_string(), self_mining_map.clone());
-                            //downstream channel for server2client communication to take place
-                            let (downstream_tx,mut downstream_rx) = mpsc::channel(1024);
-                            //adding the new connection to the connection map
-                            self.downstream_connection_mapping.lock().await.new_connection(peer_addr.to_string(), downstream_tx.clone());
-                            log::info!("Connection established from a downstream node with peer address - {:?}",peer_addr);
+                            let connection_mapping = self.downstream_connection_mapping.clone();
+                            let job_map = mining_job_map.clone();
+
+                            job_map.lock().await.insert(peer_addr.to_string(), self_mining_map.clone());
+
+                            let (downstream_tx, mut downstream_rx) = mpsc::channel(1024);
+                            connection_mapping.lock().await.new_connection(peer_addr.to_string(), downstream_tx.clone());
+
+                            log::info!("Connection established from a downstream node with peer address - {:?}", peer_addr);
                             self_.lock().await.downstream_ip = peer_addr.to_string();
-                            //catering each new connection as seperate process
-                             tokio::spawn(async move{
-                                Self::handle_connection(self_.clone(),peer_addr,reader,writer,&mut downstream_rx,self_mining_map.clone(),downstream_tx,notification_sender).await;
-                             });
+
+                            tokio::spawn(async move {
+                                Self::handle_connection(
+                                    self_.clone(),
+                                    peer_addr,
+                                    reader,
+                                    writer,
+                                    &mut downstream_rx,
+                                    self_mining_map.clone(),
+                                    downstream_tx,
+                                    notification_sender,
+                                ).await;
+
+                                // Cleanup logic
+                                log::info!("Cleaning up connection for peer: {}", peer_addr);
+                                connection_mapping.lock().await.downstream_channel_mapping.remove(&peer_addr.to_string());
+                                job_map.lock().await.remove(&peer_addr.to_string());
+                                log::info!("Cleanup complete for peer: {}", peer_addr);
+                            });
                         }
                         Err(error)=>{
                             log::info!("Connection failed: {:?}", error);
@@ -1220,6 +1237,8 @@ impl Server {
         let mut framed = FramedRead::new(reader, LinesCodec::new_with_max_length(MAX_LINE_LENGTH));
         log::info!("Handling new connection from {}", peer_addr);
 
+        let mut first_line = true;
+
         loop {
             tokio::select! {
                 Some(message) = downstream_receiver.recv()=>{
@@ -1242,10 +1261,29 @@ impl Server {
                             if line.is_empty() {
                                 continue;
                             }
-                            log::info!("Read line {:?} from {}...", line, peer_addr);
+                            log::info!("Read line {:? } from {}...", line, peer_addr);
 
-                             downstream_client.lock().await.handle_client_to_server_request(serde_json::from_str(&line).unwrap(),mining_job_map.clone(),downstream_message_sender.clone(),notification_sender.clone(),peer_addr.to_string()).await;
+                            if first_line {
+                                first_line = false;
+                                if line.starts_with("POST ") || line.starts_with("GET ") {
+                                    log::info!("Detected HTTP request from {}. Responding with 401 and closing connection.", peer_addr);
+                                    let response = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n";
+                                    if stream_writer.write_all(response.as_bytes()).await.is_err() {
+                                        log::error!("Failed to write HTTP 401 response to {}", peer_addr);
+                                    }
+                                    break; // Close connection
+                                }
+                            }
 
+                            match serde_json::from_str::<StandardRequest>(&line) {
+                                Ok(request) => {
+                                    let _ = downstream_client.lock().await.handle_client_to_server_request(request, mining_job_map.clone(), downstream_message_sender.clone(), notification_sender.clone(), peer_addr.to_string()).await;
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to parse JSON from {}: {}. Line: '{}'", peer_addr, e, line);
+                                    break; // Close connection on parse error
+                                }
+                            }
                         }
                         Some(Err(e)) => {
                             log::error!("Error reading line from {}: {}", peer_addr, e);
@@ -1254,11 +1292,9 @@ impl Server {
                         None => {
                             log::info!("Connection closed by client: {}", peer_addr);
                             break;
-
                         }
                     }
                 }
-
             }
         }
         Ok(())
