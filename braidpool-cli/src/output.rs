@@ -65,7 +65,7 @@ fn format_json_pretty(value: &Value) -> Result<String> {
             result.push_str(&"[".cyan().to_string());
             if !arr.is_empty() {
                 result.push('\n');
-                for (_i, item) in arr.iter().enumerate() {
+                for item in arr.iter() {
                     let item_str = format_json_pretty(item)?;
                     result.push_str(&format!("  {}{},\n", indent_text(&item_str, 2), ""));
                 }

@@ -21,7 +21,7 @@ impl RpcClient {
         let client = HttpClientBuilder::default()
             .request_timeout(Duration::from_secs(timeout))
             .build(target_uri)
-            .map_err(|e| BraidCliError::RpcClientError(e.into()))?;
+            .map_err(BraidCliError::RpcClientError)?;
 
         Ok(Self {
             client,
