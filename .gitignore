@@ -1,11 +1,43 @@
-target
-**/__pycache__
-**/.pytest_cache
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+
+# Python
+**/__pycache__/
+**/.pytest_cache/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.cache
+*.dat
+*.log
+*.pid
+*.db
+*.db-wal
+
+# Build artifacts
 channels/build
-*\.cache
-*\.dat
-*\.log
 pool/build
+
+# LaTeX
 proposal/.dep/
 proposal/figures/epoch.pdf
 proposal/figures/isolated-miners.pdf
@@ -16,9 +48,16 @@ proposal/proposal.fls
 proposal/proposal.log
 proposal/proposal.bbl
 proposal/proposal.blg
+
+# Simulations
 simulations/logs/*
 simulations/*.toolbox
+
+# Git worktrees
+.worktrees/
+
+# Temporary files
 notes/
-venv
-*~
+.tmp/
+*.tmp
 .aider*
