@@ -1,5 +1,4 @@
-use crate::bead::{Bead, BeadCodec, BeadRequest, BeadResponse};
-use crate::utils::BeadHash;
+use crate::bead::{Bead, BeadCodec, BeadHash, BeadRequest, BeadResponse};
 use libp2p::floodsub;
 use libp2p::{
     identify,

@@ -296,7 +296,7 @@ impl SwarmHandler {
         //Committing parents data in bead
         for tip_bead in tips_index {
             let current_tip_bead = braid_data.beads.get(*tip_bead).unwrap();
-            parent_hash_set.insert(current_tip_bead.block_header.block_hash());
+            parent_hash_set.insert(current_tip_bead.hash());
             time_hash_set
                 .0
                 .push(current_tip_bead.committed_metadata.start_timestamp);
@@ -360,13 +360,13 @@ impl SwarmHandler {
             AddBeadStatus::BeadAdded => {
                 let new_tips: Vec<_> = braid_data.tips.iter().map(|&idx| idx).collect();
                 info!(
-                    hash = %weak_share.block_header.block_hash(),
+                    hash = %weak_share.hash(),
                     new_tips = ?new_tips,
                     "Braid extended successfully"
                 );
             }
             _ => {
-                warn!(status = ?status, hash = %weak_share.block_header.block_hash(),
+                warn!(status = ?status, hash = %weak_share.hash(),
                     "Failed to extend Braid")
             }
         }
@@ -381,7 +381,7 @@ impl SwarmHandler {
         {
             Ok(_) => {
                 debug!(
-                    hash = %weak_share.block_header.block_hash(),
+                    hash = %weak_share.hash(),
                     "InsertBeadSequentially sent to DB thread"
                 );
             }
@@ -400,13 +400,13 @@ impl SwarmHandler {
         {
             Ok(_) => {
                 info!(
-                    hash = %weak_share.block_header.block_hash(),
+                    hash = %weak_share.hash(),
                     "Bead sent to swarm"
                 );
             }
             Err(e) => {
                 error!(
-                    hash = %weak_share.block_header.block_hash(),
+                    hash = %weak_share.hash(),
                     error = %e,
                     "Failed to send candidate block to swarm"
                 );

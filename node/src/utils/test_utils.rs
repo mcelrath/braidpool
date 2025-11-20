@@ -1,7 +1,19 @@
 #[cfg(test)]
-use super::BeadHash;
+use crate::bead::{Bead, BeadHash};
 #[cfg(test)]
-use crate::bead::Bead;
+pub use crate::braid::BeadIdx;
+
+// A macro for making parents and children HashMaps like:
+// parents: relatives!(0 => [], 1 => [0])
+#[macro_export]
+macro_rules! relatives {
+    () => {
+        std::collections::HashMap::new()
+    };
+    ($($k:expr => [$($v:expr),*]),* $(,)?) => {
+        std::collections::HashMap::from([$(($k, [$($v),*].into_iter().collect()),)*])
+    };
+}
 #[cfg(test)]
 use crate::committed_metadata::CommittedMetadata;
 #[cfg(test)]
@@ -65,7 +77,7 @@ pub mod test_utility_functions {
         for bead_idx in file_braid.clone().parents {
             let random_test_bead = emit_bead();
             test_braid_vector_bead_mapping.insert(
-                random_test_bead.clone().block_header.block_hash(),
+                random_test_bead.clone().hash(),
                 bead_idx.0,
             );
             beads_to_idx.insert(bead_idx.0, random_test_bead.clone());
@@ -77,7 +89,7 @@ pub mod test_utility_functions {
             if let Some(current_bead_parents) = file_braid.parents.get(&idx) {
                 for parent_bead_idx in current_bead_parents {
                     let parent_bead_block_hash =
-                        beads_to_idx[parent_bead_idx].block_header.block_hash();
+                        beads_to_idx[parent_bead_idx].hash();
                     current_bead
                         .committed_metadata
                         .parents
@@ -93,7 +105,8 @@ pub mod test_utility_functions {
         for bead_index_number in range(0, file_braid.parents.len()) {
             beads_vector.push(beads_to_idx[&bead_index_number].clone());
         }
-        let mut current_braid_genesis: HashSet<usize> = HashSet::new();
+        let mut current_braid_genesis: HashSet<usize> =
+            file_braid.geneses.clone().into_iter().collect();
         let mut current_braid_tips: HashSet<usize> = HashSet::new();
         let mut current_bead_cohorots: Vec<Cohort> = Vec::new();
         for genesis_bead_idx in file_braid.geneses.clone() {
@@ -103,24 +116,23 @@ pub mod test_utility_functions {
             current_braid_tips.insert(tips_bead_idx);
         }
         for cohort in file_braid.cohorts.clone() {
-            use crate::braid::Cohort;
-
             let mut current_cohort_indices: HashSet<usize> = HashSet::new();
             for cohort_bead_idx in cohort {
                 current_cohort_indices.insert(cohort_bead_idx);
             }
-            current_bead_cohorots.push(Cohort(current_cohort_indices));
+            current_bead_cohorots.push(current_cohort_indices);
         }
         //constructing actual braid object from file-braid object
         (
             Braid {
                 beads: beads_vector,
-                bead_index_mapping: test_braid_vector_bead_mapping,
                 tips: current_braid_tips,
-                genesis_beads: current_braid_genesis,
+                geneses: current_braid_genesis,
                 cohorts: current_bead_cohorots,
-                cohort_tips: vec![HashSet::new()], // Cohorts tips are only used in extend(), so we can skip them here.
-                orphan_beads: Vec::new(),
+                orphans: Vec::new(),
+                index: test_braid_vector_bead_mapping,
+                parents: relatives!(),
+                children: relatives!(),
             },
             file_braid.clone(),
         )

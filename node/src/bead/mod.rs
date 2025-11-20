@@ -1,6 +1,5 @@
 use crate::committed_metadata::CommittedMetadata;
 use crate::uncommitted_metadata::UnCommittedMetadata;
-use crate::utils::{hashset_to_vec_deterministic, BeadHash};
 use async_trait::async_trait;
 use bitcoin::consensus::encode::Decodable;
 use bitcoin::consensus::encode::Encodable;
@@ -12,6 +11,8 @@ use libp2p::request_response::Codec;
 use libp2p::StreamProtocol;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+
+pub type BeadHash = BlockHash;
 
 const GET_BEADS: u8 = 0;
 const GET_TIPS: u8 = 1;
@@ -25,6 +26,7 @@ pub struct Bead {
     pub committed_metadata: CommittedMetadata,
     pub uncommitted_metadata: UnCommittedMetadata,
 }
+
 impl Default for Bead {
     fn default() -> Self {
         let empty_merkle_bytes: [u8; 32] = [0; 32];
@@ -42,6 +44,14 @@ impl Default for Bead {
         }
     }
 }
+
+impl Bead {
+    /// Returns the hash of this bead's block header
+    pub fn hash(&self) -> BeadHash {
+        self.block_header.block_hash()
+    }
+}
+
 impl Encodable for Bead {
     fn consensus_encode<W: Write + ?Sized>(&self, w: &mut W) -> Result<usize, io::Error> {
         let mut len = 0;
@@ -97,7 +107,8 @@ impl Encodable for BeadRequest {
             BeadRequest::GetBeads(hashes) => {
                 let mut written = 0;
                 written += GET_BEADS.consensus_encode(writer)?; // 0 for GetBeads
-                let hashes_vec = hashset_to_vec_deterministic(hashes);
+                let mut hashes_vec: Vec<BeadHash> = hashes.iter().cloned().collect();
+                hashes_vec.sort(); // Sort them for a determinsitic order
                 written += (hashes_vec.len() as u32).consensus_encode(writer)?;
                 for hash in hashes_vec {
                     written += hash.consensus_encode(writer)?;

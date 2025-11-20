@@ -3,6 +3,19 @@
 version = 4
 
 [[package]]
+name = "ahash"
+version = "0.8.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
+dependencies = [
+ "cfg-if 1.0.4",
+ "getrandom 0.3.4",
+ "once_cell",
+ "version_check",
+ "zerocopy",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1030,6 +1043,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashmap"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
+dependencies = [
+ "cfg-if 1.0.4",
+ "crossbeam-utils",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1053,6 +1080,15 @@ checksum = "8d162beedaa69905488a8da94f5ac3edb4dd4788b732fadb7bd120b2625c1976"
 dependencies = [
  "data-encoding",
  "syn 2.0.110",
+]
+
+[[package]]
+name = "dequemap"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9a8b815f6a66eb3d70d9af06b9b6a664d947d5ea4cb3374c63941b9bfc7ca24"
+dependencies = [
+ "hashbrown 0.15.5",
 ]
 
 [[package]]
@@ -1620,6 +1656,12 @@ dependencies = [
  "tokio-util",
  "tracing",
 ]
+
+[[package]]
+name = "hashbrown"
+version = "0.14.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 
 [[package]]
 name = "hashbrown"
@@ -2970,6 +3012,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpsc"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09063ffbeb8d9545183d05bd5097ec8f0c7a0d6f81638bbbddfadee10ec0229f"
+dependencies = [
+ "ahash",
+ "crossbeam-queue",
+ "dashmap",
+ "futures",
+ "log",
+ "parking_lot",
+ "queue-ext",
+ "rand 0.8.5",
+ "std-ext",
+]
+
+[[package]]
 name = "multiaddr"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3132,6 +3191,7 @@ dependencies = [
  "if-addrs 0.13.4",
  "jsonrpsee",
  "libp2p",
+ "mpsc",
  "num",
  "rand 0.8.5",
  "secp256k1 0.30.0",
@@ -3540,6 +3600,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.110",
+]
+
+[[package]]
+name = "queue-ext"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "120b0b73691c04d1b3895c9c1131b1e553f0f93f09ffe2ba594992db585624c8"
+dependencies = [
+ "futures",
+ "log",
+ "pin-project",
+ "pin-project-lite",
 ]
 
 [[package]]
@@ -4542,6 +4614,15 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "std-ext"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a1842963116222c15799928d092cbd4db7f4e471e20c41b966ee35b1c72b71a"
+dependencies = [
+ "dequemap",
+]
 
 [[package]]
 name = "stringprep"

@@ -1,6 +1,6 @@
 use crate::{
     bead::Bead,
-    braid::{consensus_functions, Braid},
+    braid::{Braid},
     db::{init_db::init_db, BraidpoolDBTypes, InsertTupleTypes},
     error::DBErrors,
 };
@@ -96,7 +96,7 @@ impl DBHandler {
             hex::encode(bead.uncommitted_metadata.extra_nonce_1.to_be_bytes());
         let hex_converted_extranonce_2 =
             hex::encode(bead.uncommitted_metadata.extra_nonce_2.to_be_bytes());
-        let block_header_bytes = bead.block_header.block_hash().to_byte_array().to_vec();
+        let block_header_bytes = bead.hash().to_byte_array().to_vec();
         let prev_block_hash_bytes = bead.block_header.prev_blockhash.to_byte_array().to_vec();
         let merkle_root_bytes = bead.block_header.merkle_root.to_byte_array().to_vec();
         let payout_addr_bytes = bead.committed_metadata.payout_address.as_bytes().to_vec();
@@ -172,28 +172,25 @@ impl DBHandler {
                             let parent_beads = &bead.1.committed_metadata.parents;
                             braid_parent_set.insert(bead.0, HashSet::new());
                             for parent_bead_hash in parent_beads.iter() {
-                                let current_parent_bead_index = braid_data
-                                    .bead_index_mapping
-                                    .get(&*parent_bead_hash)
-                                    .unwrap();
+                                let current_parent_bead_index =
+                                    braid_data.index.get(&*parent_bead_hash).unwrap();
                                 if let Some(value) = braid_parent_set.get_mut(&bead.0) {
                                     value.insert(*current_parent_bead_index);
                                 }
                             }
                         }
-                        //Constructing ancestor set, children set will be empty as it will become the next tip
-                        let mut ancestor_mapping: HashMap<usize, HashSet<usize>> = HashMap::new();
-                        consensus_functions::updating_ancestors(
-                            &braid_data,
-                            bead_to_insert.block_header.block_hash(),
-                            &mut ancestor_mapping,
-                            &braid_parent_set,
-                        );
                         //Considering the index of the beads in braid will be same as the (insertion ids-1)
                         let bead_id = braid_data
-                            .bead_index_mapping
-                            .get(&bead_to_insert.block_header.block_hash())
+                            .index
+                            .get(&bead_to_insert.hash())
                             .unwrap();
+                        //Constructing ancestor set, children set will be empty as it will become the next tip
+                        let mut ancestor_mapping: HashMap<usize, HashSet<usize>> = HashMap::new();
+                        crate::braid::algorithms::all_ancestors(
+                            *bead_id,
+                            &braid_parent_set,
+                            &mut ancestor_mapping,
+                        );
                         let current_bead_parent_set = braid_parent_set.get(&(bead_id)).unwrap();
 
                         let mut relative_tuples: Vec<(u64, u64)> = Vec::new();
@@ -253,7 +250,7 @@ impl DBHandler {
                         let parent_timestamp_json =
                             serde_json::to_string(&parent_timestamps_values).unwrap();
 
-                        let bead_hash = bead_to_insert.block_header.block_hash();
+                        let bead_hash = bead_to_insert.hash();
                         match self
                             .insert_bead(
                                 bead_to_insert,
@@ -681,26 +678,23 @@ pub mod test {
                 let parent_beads = &bead.1.committed_metadata.parents;
                 braid_parent_set.insert(bead.0, HashSet::new());
                 for parent_bead_hash in parent_beads.iter() {
-                    let current_parent_bead_index = current_file_braid
-                        .bead_index_mapping
-                        .get(&*parent_bead_hash)
-                        .unwrap();
+                    let current_parent_bead_index =
+                        current_file_braid.index.get(&*parent_bead_hash).unwrap();
                     if let Some(value) = braid_parent_set.get_mut(&bead.0) {
                         value.insert(*current_parent_bead_index);
                     }
                 }
             }
-            let mut ancestor_mapping: HashMap<usize, HashSet<usize>> = HashMap::new();
-            consensus_functions::updating_ancestors(
-                &current_file_braid,
-                bead.block_header.block_hash(),
-                &mut ancestor_mapping,
-                &braid_parent_set,
-            );
             let bead_id = current_file_braid
-                .bead_index_mapping
-                .get(&bead.block_header.block_hash())
+                .index
+                .get(&bead.hash())
                 .unwrap();
+            let mut ancestor_mapping: HashMap<usize, HashSet<usize>> = HashMap::new();
+            crate::braid::algorithms::all_ancestors(
+                *bead_id,
+                &braid_parent_set,
+                &mut ancestor_mapping,
+            );
             let current_bead_parent_set = braid_parent_set.get(&(bead_id)).unwrap();
             let mut relative_tuples: Vec<(u64, u64)> = Vec::new();
             let mut parent_timestamp_tuples: Vec<(u64, u64, u64)> = Vec::new();
@@ -764,7 +758,7 @@ pub mod test {
                 hex::encode(bead.uncommitted_metadata.extra_nonce_1.to_be_bytes());
             let hex_converted_extranonce_2 =
                 hex::encode(bead.uncommitted_metadata.extra_nonce_2.to_be_bytes());
-            let block_header_bytes = bead.block_header.block_hash().to_byte_array().to_vec();
+            let block_header_bytes = bead.hash().to_byte_array().to_vec();
             let prev_block_hash_bytes = bead.block_header.prev_blockhash.to_byte_array().to_vec();
             let merkle_root_bytes = bead.block_header.merkle_root.to_byte_array().to_vec();
             let payout_addr_bytes = bead.committed_metadata.payout_address.as_bytes().to_vec();
@@ -820,7 +814,7 @@ pub mod test {
             };
             let fetched_test_bead = fetch_bead_by_bead_hash(
                 Arc::new(Mutex::new(test_pool.clone())),
-                bead.block_header.block_hash(),
+                bead.hash(),
             )
             .await
             .unwrap();
@@ -830,7 +824,7 @@ pub mod test {
                     .block_header
                     .block_hash()
                     .to_string(),
-                bead.block_header.block_hash().to_string()
+                bead.hash().to_string()
             );
         }
     }

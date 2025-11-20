@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         for bead in &fetched_beads {
             let curr_bead_status = guard.extend(&bead);
             debug!(
-                hash = ?bead.block_header.block_hash(),
+                hash = ?bead.hash(),
                 status = ?curr_bead_status,
                 "Bead inserted"
             );
@@ -437,13 +437,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                              deserialize(&message.data);
                          match result_bead {
                              Ok(bead) => {
-                                 info!(bead = ?bead, hash = %bead.block_header.block_hash(), "Received bead");
+                                 info!(bead = ?bead, hash = %bead.hash(), "Received bead");
                                  // Handle the received bead here
                                  let status = {
                                      let mut braid_lock = braid.write().await;
                                      braid_lock.extend(&bead)
                                  };
-                                 if let braid::AddBeadStatus::ParentsNotYetReceived = status {
+                                 if let braid::AddBeadStatus::ParentsMissing = status {
                                      //request the parents using request response protocol
                                      let peer_id = peer_manager.get_top_k_peers_for_propagation(1);
                                      if let Some(peer) = peer_id.first() {
@@ -624,7 +624,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                              let braid_lock = braid.read().await;
                                              for hash in hashes.iter() {
                                                  if let Some(index) =
-                                                     braid_lock.bead_index_mapping.get(hash)
+                                                     braid_lock.index.get(hash)
                                                  {
                                                      if let Some(bead) = braid_lock.beads.get(*index) {
                                                          beads.push(bead.clone());
@@ -643,7 +643,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                                  .iter()
                                                  .filter_map(|index| braid_lock.beads.get(*index))
                                                  .cloned()
-                                                 .map(|bead| bead.block_header.block_hash())
+                                                 .map(|bead| bead.hash())
                                                  .collect();
                                          }
                                          swarm.behaviour_mut().respond_with_tips(channel, tips);
@@ -653,11 +653,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                          {
                                              let braid_lock = braid.read().await;
                                              genesis = braid_lock
-                                                 .genesis_beads
+                                                 .geneses
                                                  .iter()
                                                  .filter_map(|index| braid_lock.beads.get(*index))
                                                  .cloned()
-                                                 .map(|bead| bead.block_header.block_hash())
+                                                 .map(|bead| bead.hash())
                                                  .collect();
                                          }
                                          swarm.behaviour_mut().respond_with_genesis(channel, genesis);
@@ -699,7 +699,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                          info!(genesis = ?genesis, genesis_count = %genesis.len(), "Received genesis beads");
                                          let status = {
                                              let braid_lock = braid.read().await;
-                                             braid_lock.check_genesis_beads(&genesis)
+                                             braid_lock.check_geneses(&genesis)
                                          };
                                          match status {
                                              braid::GenesisCheckStatus::GenesisBeadsValid => {

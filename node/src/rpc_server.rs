@@ -1,4 +1,4 @@
-use crate::bead::Bead;
+use crate::bead::{Bead, BeadHash};
 #[cfg(test)]
 use crate::braid;
 use crate::braid::AddBeadStatus;
@@ -6,7 +6,6 @@ use crate::braid::Braid;
 use crate::error::BraidRPCError;
 #[cfg(test)]
 use crate::utils::create_test_bead;
-use crate::utils::BeadHash;
 use clap::Subcommand;
 use jsonrpsee::core::async_trait;
 use jsonrpsee::core::client::ClientT;
@@ -175,7 +174,7 @@ impl RpcServer for RpcServerImpl {
         let bead = braid_data
             .beads
             .iter()
-            .find(|bead| bead.block_header.block_hash() == hash)
+            .find(|bead| bead.hash() == hash)
             .cloned();
 
         match bead {
@@ -194,7 +193,7 @@ impl RpcServer for RpcServerImpl {
             ErrorObjectOwned::owned(1, format!("Invalid bead data: {}", e), None::<()>)
         })?;
         info!(
-            hash = %bead.block_header.block_hash(),
+            hash = %bead.hash(),
             "Add bead request received"
         );
         let mut braid_data = self.braid_arc.write().await;
@@ -206,9 +205,7 @@ impl RpcServer for RpcServerImpl {
             AddBeadStatus::InvalidBead => {
                 Err(ErrorObjectOwned::owned(4, "Invalid bead", None::<()>))
             }
-            AddBeadStatus::ParentsNotYetReceived => {
-                Ok("Bead queued, waiting for parents".to_string())
-            }
+            AddBeadStatus::ParentsMissing => Ok("Bead queued, waiting for parents".to_string()),
         }
     }
 
@@ -217,7 +214,7 @@ impl RpcServer for RpcServerImpl {
         let tips: Vec<BeadHash> = braid_data
             .tips
             .iter()
-            .map(|&index| braid_data.beads[index].block_header.block_hash())
+            .map(|&index| braid_data.beads[index].hash())
             .collect();
         info!(tip_count = %tips.len(), "Get tips request received");
         let tips_str: Vec<String> = tips.iter().map(|h| h.to_string()).collect();
@@ -331,7 +328,7 @@ pub async fn test_extend_rpc() {
     let target_uri = format!("http://{}", server_addr);
     let client: HttpClient = HttpClient::builder().build(target_uri).unwrap();
 
-    let new_bead = create_test_bead(2, Some(test_bead1.block_header.block_hash()));
+    let new_bead = create_test_bead(2, Some(test_bead1.hash()));
     let bead_json_str = serde_json::to_string(&new_bead).expect("Failed to serialize bead");
 
     let mut params = ArrayParams::new();
@@ -373,7 +370,7 @@ pub async fn test_same_bead_extend() {
     let target_uri = format!("http://{}", server_addr);
     let client: HttpClient = HttpClient::builder().build(target_uri).unwrap();
 
-    let new_bead = create_test_bead(2, Some(test_bead1.block_header.block_hash()));
+    let new_bead = create_test_bead(2, Some(test_bead1.hash()));
 
     let bead_json_str = serde_json::to_string(&new_bead).expect("Failed to serialize bead");
 
@@ -395,9 +392,9 @@ pub async fn test_same_bead_extend() {
 #[tokio::test]
 pub async fn test_cohort_count_rpc() {
     let test_bead_1 = create_test_bead(1, None);
-    let test_bead_2 = create_test_bead(2, Some(test_bead_1.block_header.block_hash()));
-    let test_bead_3 = create_test_bead(3, Some(test_bead_2.block_header.block_hash()));
-    let test_bead_4 = create_test_bead(2, Some(test_bead_3.block_header.block_hash()));
+    let test_bead_2 = create_test_bead(2, Some(test_bead_1.hash()));
+    let test_bead_3 = create_test_bead(3, Some(test_bead_2.hash()));
+    let test_bead_4 = create_test_bead(2, Some(test_bead_3.hash()));
 
     let genesis_beads = vec![test_bead_1.clone()];
 
