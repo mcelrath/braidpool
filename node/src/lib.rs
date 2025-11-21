@@ -32,6 +32,7 @@ use crate::{
     error::{IPCtemplateError, StratumErrors},
     stratum::{BlockTemplate, NotifyCmd},
     uncommitted_metadata::UnCommittedMetadata,
+    utils::timestamp::MicrosecondTimestamp,
 };
 use std::error::Error;
 pub mod bead;
@@ -309,8 +310,7 @@ impl SwarmHandler {
         let min_target = CompactTarget::from_unprefixed_hex("1d00ffff").unwrap();
         //Job sent time before downstream starts mining
         let job_notification_time_val =
-            bitcoin::blockdata::locktime::absolute::Time::from_consensus(job_sent_timestamp)
-                .unwrap();
+            MicrosecondTimestamp::from_micros(job_sent_timestamp as u64);
         let candidate_block_bead_committed_metadata = CommittedMetadata {
             comm_pub_key: public_key,
             transaction_ids: TxIdVec(transaction_ids),
@@ -342,10 +342,7 @@ impl SwarmHandler {
         let unix_timestamp = duration_since_epoch.as_secs().to_u32().unwrap();
 
         let candidate_block_bead_uncommitted_metadata = UnCommittedMetadata {
-            broadcast_timestamp: bitcoin::blockdata::locktime::absolute::MedianTimePast::from_u32(
-                unix_timestamp,
-            )
-            .unwrap(),
+            broadcast_timestamp: MicrosecondTimestamp::from_secs(unix_timestamp),
             extra_nonce_1: extranonce_1_raw_value,
             extra_nonce_2: extranonce_2_raw_value,
             signature: sig,

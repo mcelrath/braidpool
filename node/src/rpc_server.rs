@@ -201,7 +201,7 @@ impl RpcServer for RpcServerImpl {
 
         match success_status {
             AddBeadStatus::BeadAdded => Ok("Bead added successfully".to_string()),
-            AddBeadStatus::DagAlreadyContainsBead => Ok("Bead already exists".to_string()),
+            AddBeadStatus::DuplicateBead => Ok("Bead already exists".to_string()),
             AddBeadStatus::InvalidBead => {
                 Err(ErrorObjectOwned::owned(4, "Invalid bead", None::<()>))
             }

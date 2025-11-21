@@ -3,15 +3,79 @@
 // and do NOT depend on the Bead struct or braid integration.
 
 use super::algorithms::*;
-use crate::braid::BeadIdx;
+use crate::braid::{BeadIdx, BeadSet, Cohort, Relatives};
 use crate::relatives;
-use num::BigUint;
-use serde::Deserialize;
+use bitcoin::Work;
 use std::collections::{HashMap, HashSet};
-use std::fs;
 
-// Directory containing braid test files (relative to project root)
-const BRAID_TEST_DIR: &str = "tests/braids";
+use crate::utils::test_utils::JSONBraid;
+
+// ============================================================================
+// Test Helper Functions
+// ============================================================================
+
+/// Helper to create Work from u64 for testing
+fn work(v: u64) -> Work {
+    let mut bytes = [0u8; 32];
+    bytes[24..32].copy_from_slice(&v.to_be_bytes());
+    Work::from_be_bytes(bytes)
+}
+
+/// Check a cohort using check_cohort_ancestors in both directions.
+/// Translated directly from Python implementation.
+fn check_cohort(
+    cohort: &Cohort,
+    parents: &Relatives,
+    children: &Relatives,
+    cache: &mut Relatives,
+) -> bool {
+    let result1 = check_cohort_ancestors(cohort, parents, children, cache);
+    // Use separate cache for reversed direction since cache keys would conflict
+    let mut reverse_cache = Relatives::new();
+    let result2 = check_cohort_ancestors(cohort, children, parents, &mut reverse_cache);
+    result1 && result2
+}
+
+/// Check a cohort by determining the set of ancestors of all beads.
+/// This computation is done over the ENTIRE DAG since any ancestor could have a long dangling path leading to this cohort.
+/// This will not determine if a cohort has valid sub-cohorts since the merging of any two or more adjacent cohorts is still a valid cohort.
+///
+/// This checks in one direction only, looking at the ancestors of `cohort`. To check in the other direction, reverse the order of the parents and children arguments.
+/// Translated directly from Python implementation.
+fn check_cohort_ancestors(
+    cohort: &Cohort,
+    parents: &Relatives,
+    children: &Relatives,
+    cache: &mut Relatives,
+) -> bool {
+    let mut ancestors = Relatives::new();
+    let mut allancestors = BeadSet::new();
+
+    let head = cohort_head(cohort, parents, children);
+
+    for &bead in cohort {
+        all_ancestors(bead, parents, &mut ancestors, cache);
+    }
+    for bead_ancestors in ancestors.values() {
+        allancestors.extend(bead_ancestors);
+    }
+
+    allancestors.retain(|a| !cohort.contains(a));
+
+    if !allancestors.is_empty() {
+        let gen_children = generation(&allancestors, children);
+        let diff: BeadSet = gen_children.difference(&allancestors).copied().collect();
+        if diff != head {
+            return false;
+        }
+    }
+
+    true
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[test]
 pub fn test_reverse() {
@@ -89,7 +153,7 @@ pub fn test_genesis_three_parallel() {
 pub fn test_tips_empty() {
     let parents = relatives!();
     let children = reverse(&parents);
-    let tips_indices = tips(&parents, &children);
+    let tips_indices = tips(&children);
     assert_eq!(tips_indices, HashSet::new());
 }
 
@@ -99,7 +163,7 @@ pub fn test_tips_single() {
         0 => [],
     );
     let children = reverse(&parents);
-    let tips_indices = tips(&parents, &children);
+    let tips_indices = tips(&children);
     assert_eq!(tips_indices, HashSet::from([0]));
 }
 
@@ -111,7 +175,7 @@ pub fn test_tips_simple() {
         2 => [0],
     );
     let children = reverse(&parents);
-    let tips_indices = tips(&parents, &children);
+    let tips_indices = tips(&children);
     assert_eq!(tips_indices, HashSet::from([1, 2]));
 }
 
@@ -125,7 +189,8 @@ pub fn test_all_ancestors_simple() {
     );
 
     let mut ancestors = relatives!();
-    all_ancestors(3, &parents, &mut ancestors);
+    let mut cache = HashMap::new();
+    all_ancestors(3, &parents, &mut ancestors, &mut cache);
 
     assert_eq!(ancestors.get(&0), Some(&HashSet::new()));
     assert_eq!(ancestors.get(&1), Some(&HashSet::from([0])));
@@ -143,18 +208,24 @@ pub fn test_cohorts_simple() {
     );
 
     let children = reverse(&parents);
-    let cohort_indices = cohorts(&parents, &children, None);
+    let geneses_set = geneses(&parents);
+    let mut cache = HashMap::new();
+    let simple_cohorts = cohorts(&parents, &children, &geneses_set, &mut cache);
 
+    println!("Cohorts: {:?}", simple_cohorts);
+    println!("Ancestor cache: {:?}", cache);
+    println!("Parents: {:?}", parents);
+    println!("Children: {:?}", children);
     // Each bead should be in its own cohort since it's a simple chain
-    assert_eq!(cohort_indices.len(), 4);
-    assert!(cohort_indices.iter().any(|c| c == &HashSet::from([0])));
-    assert!(cohort_indices.iter().any(|c| c == &HashSet::from([1])));
-    assert!(cohort_indices.iter().any(|c| c == &HashSet::from([2])));
-    assert!(cohort_indices.iter().any(|c| c == &HashSet::from([3])));
+    assert_eq!(simple_cohorts.len(), 4);
+    assert!(simple_cohorts[0] == HashSet::from([0]));
+    assert!(simple_cohorts[1] == HashSet::from([1]));
+    assert!(simple_cohorts[2] == HashSet::from([2]));
+    assert!(simple_cohorts[3] == HashSet::from([3]));
 }
 
 #[test]
-pub fn test_cohorts_parallel() {
+pub fn test_cohorts_twotip() {
     let parents = relatives!(
         0 => [],
         1 => [0],
@@ -162,16 +233,14 @@ pub fn test_cohorts_parallel() {
     );
 
     let children = reverse(&parents);
-    let cohort_indices = cohorts(&parents, &children, None);
+    let geneses_set = geneses(&parents);
+    let mut cache = HashMap::new();
+    let twotip_cohorts = cohorts(&parents, &children, &geneses_set, &mut cache);
 
     // Should have one cohort with [0] and another with [1, 2]
-    assert_eq!(cohort_indices.len(), 2);
-    let has_genesis = cohort_indices.iter().any(|c| c == &HashSet::from([0]));
-    let has_parallel = cohort_indices
-        .iter()
-        .any(|c| c.contains(&1) && c.contains(&2) && c.len() == 2);
-    assert!(has_genesis);
-    assert!(has_parallel);
+    assert_eq!(twotip_cohorts.len(), 2);
+    assert!(twotip_cohorts[0] == HashSet::from([0]));
+    assert!(twotip_cohorts[1] == HashSet::from([1, 2]));
 }
 
 #[test]
@@ -230,7 +299,8 @@ pub fn test_highest_work_path_simple() {
     );
 
     let children = reverse(&parents);
-    let path = highest_work_path(&parents, &children, None).unwrap();
+    let bead_work: HashMap<BeadIdx, Work> = parents.keys().map(|&k| (k, work(1))).collect();
+    let path = highest_work_path(&parents, &children, &bead_work);
 
     // Should return one of the valid paths
     assert!(path == vec![0, 1, 3] || path == vec![0, 2]);
@@ -249,14 +319,25 @@ pub fn test_check_cohort() {
 
     // Single bead should always be a valid cohort
     let single_bead_cohort = HashSet::from([0]);
-    assert!(check_cohort(&single_bead_cohort, &parents, &children));
+    let mut cache = HashMap::new();
+    assert!(check_cohort(
+        &single_bead_cohort,
+        &parents,
+        &children,
+        &mut cache
+    ));
 
     let single_bead_cohort_2 = HashSet::from([3]);
-    assert!(check_cohort(&single_bead_cohort_2, &parents, &children));
+    assert!(check_cohort(
+        &single_bead_cohort_2,
+        &parents,
+        &children,
+        &mut cache
+    ));
 
     // This should be a valid cohort (connected subgraph)
     let valid_cohort = HashSet::from([1, 2, 3]);
-    assert!(check_cohort(&valid_cohort, &parents, &children));
+    assert!(check_cohort(&valid_cohort, &parents, &children, &mut cache));
 }
 
 #[test]
@@ -269,52 +350,48 @@ pub fn test_descendant_work() {
 
     let children = reverse(&parents);
 
-    // Create work HashMap manually since it needs BigUint values
-    let work_values: HashMap<BeadIdx, BigUint> = HashMap::from([
-        (0, BigUint::from(1u64)),
-        (1, BigUint::from(2u64)),
-        (2, BigUint::from(3u64)),
-    ]);
+    // Create work HashMap
+    let work_values: HashMap<BeadIdx, Work> =
+        HashMap::from([(0, work(1)), (1, work(2)), (2, work(3))]);
 
-    let descendant_work = descendant_work(&parents, &children, Some(&work_values), None);
+    // Compute cohorts
+    let mut cache = HashMap::new();
+    let geneses_set = geneses(&parents);
+    let cohorts = cohorts(&parents, &children, &geneses_set, &mut cache);
+
+    let descendant_work = descendant_work(&children, &work_values, &cohorts);
 
     // 0: 1 + 2 + 3 = 6
     // 1: 2 + 3 = 5
     // 2: 3 = 3
-    assert_eq!(descendant_work.get(&0), Some(&BigUint::from(6u64)));
-    assert_eq!(descendant_work.get(&1), Some(&BigUint::from(5u64)));
-    assert_eq!(descendant_work.get(&2), Some(&BigUint::from(3u64)));
+    assert_eq!(descendant_work.get(&0), Some(&work(6)));
+    assert_eq!(descendant_work.get(&1), Some(&work(5)));
+    assert_eq!(descendant_work.get(&2), Some(&work(3)));
 }
 
 #[test]
 pub fn test_bead_cmp() {
-    // Create BigUint values manually since the macro doesn't support custom types
-    let work_values: HashMap<BeadIdx, BigUint> = HashMap::from([
-        (0, BigUint::from(10u64)),
-        (1, BigUint::from(20u64)),
-        (2, BigUint::from(15u64)),
-    ]);
-    let awork_values: HashMap<BeadIdx, BigUint> = HashMap::from([
-        (0, BigUint::from(10u64)),
-        (1, BigUint::from(20u64)),
-        (2, BigUint::from(15u64)),
-    ]);
+    // Create Work values
+    let work_values: HashMap<BeadIdx, Work> =
+        HashMap::from([(0, work(10)), (1, work(20)), (2, work(15))]);
+    let awork_values: HashMap<BeadIdx, Work> =
+        HashMap::from([(0, work(10)), (1, work(20)), (2, work(15))]);
 
-    // Test ordering - bead_cmp returns Result<Ordering, BraidError>
+    // Test ordering - bead_cmp returns Ordering
     assert_eq!(
-        bead_cmp(1, 0, &work_values, &awork_values).unwrap(),
+        bead_cmp(1, 0, &work_values, &awork_values),
         std::cmp::Ordering::Greater
     );
     assert_eq!(
-        bead_cmp(0, 1, &work_values, &awork_values).unwrap(),
+        bead_cmp(0, 1, &work_values, &awork_values),
         std::cmp::Ordering::Less
     );
     assert_eq!(
-        bead_cmp(0, 2, &work_values, &awork_values).unwrap(),
+        bead_cmp(0, 2, &work_values, &awork_values),
         std::cmp::Ordering::Less
     );
     assert_eq!(
-        bead_cmp(2, 0, &work_values, &awork_values).unwrap(),
+        bead_cmp(2, 0, &work_values, &awork_values),
         std::cmp::Ordering::Greater
     );
 }
@@ -359,13 +436,20 @@ pub fn test_check_cohort_ancestors() {
 
     // Single bead should always pass check_cohort_ancestors
     let single_cohort = HashSet::from([0]);
-    assert!(check_cohort_ancestors(&single_cohort, &parents, &children));
+    let mut cache = HashMap::new();
+    assert!(check_cohort_ancestors(
+        &single_cohort,
+        &parents,
+        &children,
+        &mut cache
+    ));
 
     let single_cohort_2 = HashSet::from([3]);
     assert!(check_cohort_ancestors(
         &single_cohort_2,
         &parents,
-        &children
+        &children,
+        &mut cache
     ));
 
     // Connected subgraph should pass
@@ -373,81 +457,195 @@ pub fn test_check_cohort_ancestors() {
     assert!(check_cohort_ancestors(
         &connected_cohort,
         &parents,
-        &children
+        &children,
+        &mut cache
     ));
+}
+
+// ============================================================================
+// Ancestors Cache Tests
+// ============================================================================
+
+#[test]
+pub fn test_all_ancestors_cache_miss_basic() {
+    // Test basic cache functionality - first call should compute and cache
+    let parents = relatives!(
+        0 => [],
+        1 => [0],
+        2 => [1],
+        3 => [2],
+    );
+
+    let mut ancestors = relatives!();
+    let mut cache = HashMap::new();
+
+    // First call - should compute and cache results for bead 3 and its dependencies
+    all_ancestors(3, &parents, &mut ancestors, &mut cache);
+
+    // Verify ancestors were computed correctly for requested bead and its dependencies
+    assert_eq!(ancestors.get(&0), Some(&HashSet::new()));
+    assert_eq!(ancestors.get(&1), Some(&HashSet::from([0])));
+    assert_eq!(ancestors.get(&2), Some(&HashSet::from([0, 1])));
+    assert_eq!(ancestors.get(&3), Some(&HashSet::from([0, 1, 2])));
+
+    // Verify cache was populated only for beads that were explicitly requested
+    // Cache contains only the original requested bead (3), not its dependencies
+    assert_eq!(cache.get(&3), Some(&HashSet::from([0, 1, 2])));
+}
+
+#[test]
+pub fn test_all_ancestors_cache_hit_basic() {
+    // Test cache hit functionality - second call should use cached results
+    let parents = relatives!(
+        0 => [],
+        1 => [0],
+        2 => [1],
+        3 => [2],
+    );
+
+    let mut ancestors = relatives!();
+    let mut cache = HashMap::new();
+
+    // Pre-populate cache with known result for bead 3 only
+    cache.insert(3, HashSet::from([0, 1, 2]));
+
+    // Call with bead that is already cached
+    all_ancestors(3, &parents, &mut ancestors, &mut cache);
+
+    // Should use cached results without recomputation
+    assert_eq!(ancestors.get(&3), Some(&HashSet::from([0, 1, 2])));
+
+    // Cache should remain unchanged for bead 3
+    assert_eq!(cache.get(&3), Some(&HashSet::from([0, 1, 2])));
+}
+
+#[test]
+pub fn test_all_ancestors_cache_partial_hit() {
+    // Test partial cache hit - some beads cached, some not
+    let parents = relatives!(
+        0 => [],
+        1 => [0],
+        2 => [1],
+        3 => [2],
+    );
+
+    let mut ancestors = relatives!();
+    let mut cache = HashMap::new();
+
+    // Pre-populate cache with result for bead 2
+    cache.insert(2, HashSet::from([0, 1]));
+    // Note: 3 is NOT cached
+
+    // Call with beads 2 and 3 - 2 should use cache, 3 should compute
+    all_ancestors(2, &parents, &mut ancestors, &mut cache);
+    all_ancestors(3, &parents, &mut ancestors, &mut cache);
+
+    // Verify results for both beads
+    assert_eq!(ancestors.get(&2), Some(&HashSet::from([0, 1])));
+    assert_eq!(ancestors.get(&3), Some(&HashSet::from([0, 1, 2])));
+
+    // Verify cache was updated with newly computed result for bead 3
+    assert_eq!(cache.get(&2), Some(&HashSet::from([0, 1])));
+    assert_eq!(cache.get(&3), Some(&HashSet::from([0, 1, 2])));
+}
+
+#[test]
+pub fn test_all_ancestors_cache_complex_dag() {
+    // Test cache with a more complex DAG structure
+    let parents = relatives!(
+        0 => [],      // Genesis
+        1 => [0],     // Child of 0
+        2 => [0],     // Another child of 0 (parallel)
+        3 => [1, 2],  // Merge point
+    );
+
+    let mut ancestors = relatives!();
+    let mut cache = HashMap::new();
+
+    // First compute ancestors for bead 3
+    all_ancestors(3, &parents, &mut ancestors, &mut cache);
+
+    // Verify complex ancestry relationships
+    assert_eq!(ancestors.get(&3), Some(&HashSet::from([0, 1, 2])));
+    assert_eq!(ancestors.get(&2), Some(&HashSet::from([0])));
+    assert_eq!(ancestors.get(&1), Some(&HashSet::from([0])));
+    assert_eq!(ancestors.get(&0), Some(&HashSet::new()));
+
+    // Now call again with bead 3 - should use cache immediately
+    ancestors.clear();
+    all_ancestors(3, &parents, &mut ancestors, &mut cache);
+
+    // Should get cached results immediately
+    assert_eq!(ancestors.get(&3), Some(&HashSet::from([0, 1, 2])));
+}
+
+#[test]
+pub fn test_all_ancestors_cache_multiple_calls() {
+    // Test that cache persists across multiple calls
+    let parents = relatives!(
+        0 => [],
+        1 => [0],
+        2 => [1],
+        3 => [0],     // Alternative path
+    );
+
+    let mut ancestors = relatives!();
+    let mut cache = HashMap::new();
+
+    // First call - compute ancestors for bead 2
+    all_ancestors(2, &parents, &mut ancestors, &mut cache);
+    assert_eq!(ancestors.get(&2), Some(&HashSet::from([0, 1])));
+
+    // Second call - compute ancestors for bead 3
+    ancestors.clear();
+    all_ancestors(3, &parents, &mut ancestors, &mut cache);
+    assert_eq!(ancestors.get(&3), Some(&HashSet::from([0])));
+
+    // Third call - ask for both previously computed beads
+    ancestors.clear();
+    all_ancestors(2, &parents, &mut ancestors, &mut cache);
+    all_ancestors(3, &parents, &mut ancestors, &mut cache);
+    assert_eq!(ancestors.get(&2), Some(&HashSet::from([0, 1])));
+    assert_eq!(ancestors.get(&3), Some(&HashSet::from([0])));
+
+    // Verify cache contains both requested beads
+    assert!(cache.contains_key(&0));
+    assert!(cache.contains_key(&1));
+    assert!(cache.contains_key(&2));
+    assert!(cache.contains_key(&3));
+}
+
+#[test]
+pub fn test_all_ancestors_cache_isolated_beads() {
+    // Test with beads that have no relationships
+    let parents = relatives!(
+        0 => [],  // Isolated genesis
+        1 => [],  // Another isolated genesis
+        2 => [],  // Yet another isolated genesis
+    );
+
+    let mut ancestors = relatives!();
+    let mut cache = HashMap::new();
+
+    // Compute ancestors for isolated beads
+    for bead in [0, 1, 2] {
+        all_ancestors(bead, &parents, &mut ancestors, &mut cache);
+    }
+
+    // All should have empty ancestor sets
+    assert_eq!(ancestors.get(&0), Some(&HashSet::new()));
+    assert_eq!(ancestors.get(&1), Some(&HashSet::new()));
+    assert_eq!(ancestors.get(&2), Some(&HashSet::new()));
+
+    // Cache should reflect this
+    assert_eq!(cache.get(&0), Some(&HashSet::new()));
+    assert_eq!(cache.get(&1), Some(&HashSet::new()));
+    assert_eq!(cache.get(&2), Some(&HashSet::new()));
 }
 
 /// ****
 /// File-based tests for algorithm functions
 /// ****
-
-// JSONBraid structure for loading test data from JSON files with HashSet for algorithm compatibility
-#[derive(Clone, Debug, Deserialize)]
-struct JSONBraid {
-    pub description: String,
-    pub parents: HashMap<BeadIdx, HashSet<BeadIdx>>,
-    pub children: HashMap<BeadIdx, HashSet<BeadIdx>>,
-    pub geneses: HashSet<BeadIdx>,
-    pub tips: HashSet<BeadIdx>,
-    pub cohorts: Vec<HashSet<BeadIdx>>,
-    // this is populated in the test files but always 1. TODO: improve tests with different work
-    // per bead to further exercise hwpath and descendant_work
-    #[allow(unused)]
-    pub bead_work: HashMap<BeadIdx, u32>,
-    pub work: HashMap<BeadIdx, u32>,
-    pub highest_work_path: Vec<BeadIdx>,
-}
-
-impl JSONBraid {
-    /// Load and convert from JSON file to HashSet format
-    /// Panics if the file cannot be loaded, with a clear error message including the filename
-    pub fn load(file_path: &str) -> Self {
-        let file_content = std::fs::read_to_string(file_path)
-            .unwrap_or_else(|e| panic!("Failed to read test file '{}': {}", file_path, e));
-        serde_json::from_str(&file_content)
-            .unwrap_or_else(|e| panic!("Failed to parse JSON in test file '{}': {}", file_path, e))
-    }
-
-    /// Returns an iterator over all JSONBraids in the test directory
-    pub fn tests() -> Box<dyn Iterator<Item = (JSONBraid, String)>> {
-        // Get the project root directory from Cargo's environment variable
-        let project_root = env!("CARGO_MANIFEST_DIR");
-        let test_dir = format!("{}/../{}", project_root, BRAID_TEST_DIR);
-
-        let dir_entries = fs::read_dir(&test_dir)
-            .unwrap_or_else(|e| panic!("Failed to read test directory '{}': {}", test_dir, e));
-
-        // Collect all JSON test files first
-        let test_files: Vec<(JSONBraid, String)> = dir_entries
-            .filter_map(|entry| {
-                let entry = entry.unwrap_or_else(|e| panic!("Failed to read directory: {:?}", e));
-                let path = entry.path();
-
-                // Only include JSON files
-                if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    let file_path = path
-                        .to_str()
-                        .expect("Cannot stringify file path (Invalid UTF-8?)");
-                    let filename = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    Some((JSONBraid::load(file_path), filename))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Panic if no test files were found
-        if test_files.is_empty() {
-            panic!("No JSON test files found in directory '{}'", test_dir);
-        }
-
-        Box::new(test_files.into_iter())
-    }
-}
 
 #[test]
 pub fn test_genesis_from_files() {
@@ -471,7 +669,7 @@ pub fn test_tips_from_files() {
         let parents = file_braid.parents.clone();
         let children = reverse(&parents);
 
-        let computed_tips = tips(&parents, &children);
+        let computed_tips = tips(&children);
         let expected_tips = file_braid.tips.clone();
 
         assert_eq!(
@@ -502,18 +700,10 @@ pub fn test_cohorts_from_files() {
     for (file_braid, filename) in JSONBraid::tests() {
         let parents = file_braid.parents.clone();
         let children = reverse(&parents);
-        let computed_cohorts = cohorts(&parents, &children, None);
+        let geneses_set = geneses(&parents);
+        let mut cache = HashMap::new();
+        let computed_cohorts = cohorts(&parents, &children, &geneses_set, &mut cache);
         let expected_cohorts = file_braid.cohorts.clone();
-
-        // Sort both for comparison
-        computed_cohorts.iter().for_each(|c| {
-            let mut sorted_vec: Vec<BeadIdx> = c.iter().copied().collect();
-            sorted_vec.sort();
-        });
-        expected_cohorts.iter().for_each(|c| {
-            let mut sorted_vec: Vec<BeadIdx> = c.iter().copied().collect();
-            sorted_vec.sort();
-        });
 
         // The algorithm must produce EXACT results matching the JSON test cases
         assert_eq!(
@@ -531,16 +721,15 @@ pub fn test_highest_work_path_from_files() {
         let children = reverse(&parents);
 
         // Create bead work maps from file data
-        let bead_work: HashMap<BeadIdx, BigUint> = file_braid
+        let bead_work: HashMap<BeadIdx, Work> = file_braid
             .bead_work
             .iter()
-            .map(|(k, v)| (*k, BigUint::from(*v)))
+            .map(|(k, v)| (*k, work(*v as u64)))
             .collect();
 
-        let computed_path = highest_work_path(&parents, &children, Some(bead_work));
+        let path = highest_work_path(&parents, &children, &bead_work);
 
         // The algorithm must produce EXACT results matching the JSON test cases
-        let path = computed_path.unwrap();
         assert_eq!(
             path, file_braid.highest_work_path,
             "Highest work path mismatch in file '{}' [{}] (expected: {:?}, got: {:?})",
@@ -556,13 +745,18 @@ pub fn test_descendant_work_from_files() {
         let children = reverse(&parents);
 
         // Create work maps from file data
-        let work: HashMap<BeadIdx, BigUint> = file_braid
+        let work_map: HashMap<BeadIdx, Work> = file_braid
             .work
             .iter()
-            .map(|(k, v)| (*k, BigUint::from(*v)))
+            .map(|(k, v)| (*k, work(*v as u64)))
             .collect();
 
-        let computed_descendant_work = descendant_work(&parents, &children, Some(&work), None);
+        // Compute cohorts for descendant work
+        let mut cohort_cache = HashMap::new();
+        let geneses_set = geneses(&children);
+        let desc_cohorts = cohorts(&children, &parents, &geneses_set, &mut cohort_cache);
+
+        let computed_descendant_work = descendant_work(&children, &work_map, &desc_cohorts);
 
         // Verify that all beads have work calculations
         for (bead_idx, _) in &parents {
@@ -573,8 +767,8 @@ pub fn test_descendant_work_from_files() {
             );
 
             // Descendant work should be at least the bead's own work
-            let zero_work = BigUint::from(0u64);
-            let bead_work = work.get(bead_idx).unwrap_or(&zero_work);
+            let zero_work = work(0);
+            let bead_work = work_map.get(bead_idx).unwrap_or(&zero_work);
             let desc_work = computed_descendant_work.get(bead_idx).unwrap();
             assert!(
                 desc_work >= bead_work,

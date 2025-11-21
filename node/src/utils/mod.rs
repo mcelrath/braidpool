@@ -6,14 +6,20 @@ use crate::{
 };
 use ::bitcoin::BlockHash;
 use bitcoin::{
-    absolute::MedianTimePast as Time, ecdsa::Signature, BlockHeader, BlockTime, BlockVersion,
+    ecdsa::Signature, BlockHeader, BlockTime, BlockVersion,
     CompactTarget, EcdsaSighashType, TxMerkleNode,
 };
+
+use crate::utils::timestamp::MicrosecondTimestamp;
+
+// Re-export Time for other modules
+pub use bitcoin::absolute::MedianTimePast as Time;
 // Standard Imports
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
 
 pub mod test_utils;
+pub mod timestamp;
 
 // Error Definitions
 use std::{collections::HashSet, net::IpAddr, str::FromStr};
@@ -73,7 +79,9 @@ pub fn create_test_bead(nonce: u32, prev_hash: Option<BlockHash>) -> Bead {
     }
     let weak_target = CompactTarget::from_consensus(486604799);
     let min_target = CompactTarget::from_consensus(486604799);
-    let time_val = Time::from_consensus(1653195600).unwrap();
+    // Convert Unix timestamp (seconds) to microseconds since epoch
+  let timestamp_micros = MicrosecondTimestamp::from_secs(1653195600);
+  let time_val = timestamp_micros;
     let test_committed_metadata: CommittedMetadata = CommittedMetadata {
         comm_pub_key: public_key,
         min_target: min_target,
