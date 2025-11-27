@@ -325,50 +325,122 @@ pub fn test_json_braid_end_to_end() {
             .collect();
 
         // Compare geneses by index (already stored as BeadSet/BeadIdx)
+        //assert_eq!(
+        //    braid.geneses, reference_braid.geneses,
+        //    "File {}: Geneses mismatch",
+        //    filename
+        //);
         assert_eq!(
-            braid.geneses, reference_braid.geneses,
+            braid
+                .geneses
+                .iter()
+                .map(|&i| braid.beads[i].hash())
+                .collect::<HashSet<_>>(),
+            reference_braid
+                .geneses
+                .iter()
+                .map(|&i| reference_braid.beads[i].hash())
+                .collect::<HashSet<_>>(),
             "File {}: Geneses mismatch",
             filename
         );
 
         // Compare tips by index (already stored as BeadSet/BeadIdx)
+        //assert_eq!(
+        //    braid.tips, reference_braid.tips,
+        //    "File {}: Tips mismatch",
+        //    filename
+        //);
         assert_eq!(
-            braid.tips, reference_braid.tips,
+            braid
+                .tips
+                .iter()
+                .map(|&i| braid.beads[i].hash())
+                .collect::<HashSet<_>>(),
+            reference_braid
+                .tips
+                .iter()
+                .map(|&i| reference_braid.beads[i].hash())
+                .collect::<HashSet<_>>(),
             "File {}: Tips mismatch",
             filename
         );
 
         // Compare parent relationships by index (much more readable than hashes)
+        //        for (hash, &test_idx) in &test_hash_to_idx {
+        //            let test_parent_indices: HashSet<_> =
+        //                braid.parents[&test_idx].iter().copied().collect();
+        //
+        //            let ref_idx = ref_hash_to_idx[hash];
+        //            let ref_parent_indices: HashSet<_> =
+        //                reference_braid.parents[&ref_idx].iter().copied().collect();
+        //
+        //            assert_eq!(
+        //                test_parent_indices, ref_parent_indices,
+        //                "File {}: Parent mismatch for bead with hash {:?}",
+        //                filename, hash
+        //            );
+        //        }
         for (hash, &test_idx) in &test_hash_to_idx {
-            let test_parent_indices: HashSet<_> =
-                braid.parents[&test_idx].iter().copied().collect();
+            let test_parent_set = braid.parents.get(&test_idx).cloned().unwrap_or_default();
+            let test_parent_hashes: HashSet<_> = test_parent_set
+                .iter()
+                .map(|&p| braid.beads[p].hash())
+                .collect();
 
-            let ref_idx = ref_hash_to_idx[hash];
-            let ref_parent_indices: HashSet<_> =
-                reference_braid.parents[&ref_idx].iter().copied().collect();
+            let ref_idx = *ref_hash_to_idx.get(hash).unwrap();
+            let ref_parent_set = reference_braid
+                .parents
+                .get(&ref_idx)
+                .cloned()
+                .unwrap_or_default();
+            let ref_parent_hashes: HashSet<_> = ref_parent_set
+                .iter()
+                .map(|&p| reference_braid.beads[p].hash())
+                .collect();
 
             assert_eq!(
-                test_parent_indices, ref_parent_indices,
+                test_parent_hashes, ref_parent_hashes,
                 "File {}: Parent mismatch for bead with hash {:?}",
                 filename, hash
             );
         }
 
         // Compare cohorts by index (much more readable than hashes)
-        let test_cohort_indices: Vec<HashSet<_>> = braid
+        //        let test_cohort_indices: Vec<HashSet<_>> = braid
+        //            .cohorts
+        //            .iter()
+        //            .map(|cohort| cohort.iter().copied().collect())
+        //            .collect();
+        //        let ref_cohort_indices: Vec<HashSet<_>> = reference_braid
+        //            .cohorts
+        //            .iter()
+        //            .map(|cohort| cohort.iter().copied().collect())
+        //            .collect();
+        //        assert_eq!(
+        //            test_cohort_indices, ref_cohort_indices,
+        //            "File {}: Cohorts mismatch.\n  Expected: {:?}\n  Got: {:?}",
+        //            filename, ref_cohort_indices, test_cohort_indices
+        //        );
+        let test_cohort_hashes: Vec<HashSet<_>> = braid
             .cohorts
             .iter()
-            .map(|cohort| cohort.iter().copied().collect())
+            .map(|cohort| cohort.iter().map(|&i| braid.beads[i].hash()).collect())
             .collect();
-        let ref_cohort_indices: Vec<HashSet<_>> = reference_braid
+        let ref_cohort_hashes: Vec<HashSet<_>> = reference_braid
             .cohorts
             .iter()
-            .map(|cohort| cohort.iter().copied().collect())
+            .map(|cohort| {
+                cohort
+                    .iter()
+                    .map(|&i| reference_braid.beads[i].hash())
+                    .collect()
+            })
             .collect();
         assert_eq!(
-            test_cohort_indices, ref_cohort_indices,
+            test_cohort_hashes, ref_cohort_hashes,
             "File {}: Cohorts mismatch.\n  Expected: {:?}\n  Got: {:?}",
-            filename, ref_cohort_indices, test_cohort_indices
+            filename, ref_cohort_hashes, test_cohort_hashes
         );
 
         println!("✅ {} passed all validation checks", filename);

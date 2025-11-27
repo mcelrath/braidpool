@@ -50,6 +50,22 @@ static COHORTS: LazyLock<Arc<RwLock<Vec<Cohort>>>> =
 static THREADS: LazyLock<Arc<Mutex<HashMap<ThreadId, mpsc::Sender<BeadMessage>>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
+#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash)]
+pub enum ExtendStrategy {
+    /// Optimized heuristic approach (default)
+    Heuristic,
+    /// Original approach but maintaining cache (incremental cache + algorithms::cohorts)
+    Cached,
+    /// Original unoptimized approach (clear cache + algorithms::cohorts)
+    NoCache,
+}
+
+impl Default for ExtendStrategy {
+    fn default() -> Self {
+        ExtendStrategy::Heuristic
+    }
+}
+
 // Remove thread-local - each thread manages its own braid instance
 
 #[derive(Clone, Debug, Default)]
@@ -64,9 +80,10 @@ pub struct Braid {
     pub parents: Relatives,
     pub children: Relatives,
     // Performance optimization caches (public to crate only -- no one else should need them)
-    pub(crate) ancestor_cache: Relatives,
+    pub ancestor_cache: Relatives,
     pub(crate) descendant_cache: Relatives,
     pub(crate) tail_cache: Vec<BeadSet>,
+    pub extend_strategy: ExtendStrategy,
 }
 
 impl Braid {
@@ -121,43 +138,20 @@ impl Braid {
         // Compute cohorts using algorithms::cohorts, and populate the ancestor_cache
         let cohorts = algorithms::cohorts(&parents, &children, &geneses, &mut ancestor_cache);
 
+        // Init descendant_cache empty (incremental updates in extend)
+        let descendant_cache = Relatives::new();
+
         // Truncate ancestor cache to only contain intra-cohort relationships for performance optimization
         // This must happen AFTER cohort computation to avoid corrupting the algorithm
-        for cohort in &cohorts {
-            algorithms::truncate_cache_to_cohort(&mut ancestor_cache, cohort);
-        }
+        //for cohort in &cohorts {
+        //    algorithms::truncate_cache_to_cohort(&mut ancestor_cache, cohort);
+        //}
 
-        // Populate the descendant cache for work_sort, hwpath, and descendant_work
-        // Use sub_braid approach to ensure only intra-cohort descendant relationships
-        let mut descendant_cache = Relatives::new();
-        let mut tail_cache = Vec::<BeadSet>::new();
+        let mut tail_cache = Vec::new();
         for c in &cohorts {
-            let mut cohort_descendants = Relatives::new();
-            let mut temp_cache = Relatives::new();
-
-            // Build sub-braid for this cohort to limit descendant computation to cohort scope
-            let sub_parents = algorithms::sub_braid(&c, &parents);
+            let sub_parents = algorithms::sub_braid(c, &parents);
             let sub_children = algorithms::reverse(&sub_parents);
-
-            // Compute descendants only within this cohort using the sub-children
-            // Descendants are found by calling all_ancestors with the children map
-            for &bead in c {
-                algorithms::all_ancestors(
-                    bead,
-                    &sub_children,
-                    &mut cohort_descendants,
-                    &mut temp_cache,
-                );
-            }
-
-            // Add cohort-specific descendants to the main cache
-            descendant_cache.extend(cohort_descendants);
-
-            tail_cache.push(algorithms::cohort_tail(
-                &c,
-                &sub_parents,
-                &algorithms::reverse(&sub_parents),
-            ));
+            tail_cache.push(algorithms::cohort_tail(c, &sub_parents, &sub_children));
         }
 
         // Return braid with computed values
@@ -195,9 +189,7 @@ impl Braid {
             .map(|h| self.index[h])
             .collect()
     }
-}
 
-impl Braid {
     /// Attempts to extend the braid with the given bead.
     /// Returns true if the bead successfully extended the braid, false otherwise.
     pub fn extend(&mut self, bead: &Bead) -> AddBeadStatus {
@@ -257,91 +249,264 @@ impl Braid {
             .insert(new_bead_index, parent_indices_set.clone());
         self.children.entry(new_bead_index).or_default();
 
-        // Find earliest parent of <bead> in cohorts and nuke all cohorts after that (Python algorithm)
-        let mut found_parents = BeadSet::new();
-        let mut dangling = BeadSet::new();
-        dangling.insert(new_bead_index);
-
-        // Iterate cohorts in reverse, collecting found parents and dangling beads
-        // This matches the Python algorithm exactly
-        while let Some(cohort) = self.cohorts.pop() {
-            self.tail_cache.pop(); // Invalidate the tail cache for this cohort
-                                   // found_parents |= set(p for p in bead.parents) & c
-            for &parent_index in &parent_indices_set {
-                if cohort.contains(&parent_index) {
-                    found_parents.insert(parent_index);
-                }
-            }
-
-            // This is not the the first cohort we popped, in which case `cohort` is an ancestor of
-            // everything in `dangling`. Add elements of this cohort as ancestors to everything in
-            // `dangling`. Then add the cohort to dangling.
-            if !dangling.is_empty() {
-                for dangling_index in &dangling {
-                    // The only element not in in ancestor_cache is the new one. The ancestor_cache
-                    // element for new_bead_index will be computed by cohorts()
-                    if *dangling_index != new_bead_index {
-                        self.ancestor_cache
-                            .get_mut(&dangling_index)
-                            .unwrap()
-                            .extend(cohort.iter().copied());
-                    }
-                }
-            }
-            dangling.extend(cohort.iter().copied());
-
-            // Break if we found all parents
-            if found_parents.len() == parent_indices_set.len() {
-                break;
-            }
-        }
-
-        // Remove parents from tips if present
+        // Update caches and tips
         for &parent_index in &parent_indices_set {
             self.tips.remove(&parent_index);
         }
-
-        // Add the new bead's index to tips
         self.tips.insert(new_bead_index);
 
-        // Compute new cohorts from the dangling set
-        if !dangling.is_empty() {
-            let sub_parents = algorithms::sub_braid(&dangling, &self.parents);
-            let sub_children = algorithms::reverse(&sub_parents);
-            let sub_geneses = algorithms::geneses(&sub_parents);
+        match self.extend_strategy {
+            ExtendStrategy::Heuristic => {
+                // --- O(W) Heuristic Cohort Update ---
+                // Logic:
+                // 1. Find the range [idx_min, idx_max] of cohorts containing parents.
+                // 2. If idx_min < idx_max, merge all cohorts in that range.
+                // 3. Identify tail of the (possibly merged) parent cohort.
+                // 4. If the new bead's parents include ALL of the tail, it extends the cohort (New Cohort).
+                // 5. Otherwise, it merges into that cohort (Merge).
 
-            // Ensure the ancestor_cache is fully populated for the new_bead_index before cohort recomputation.
-            // This fills the persistent self.ancestor_cache with all transitive ancestors of the new bead.
-            algorithms::all_ancestors(
-                new_bead_index,
-                &sub_parents,
-                &mut Relatives::new(), // Use a temporary accumulator that we throw away
-                &mut self.ancestor_cache, // This is the persistent cache
-            );
+                let mut idx_max = None;
+                let mut idx_min = None;
+                let mut parents_found_count = 0;
+                let total_parents = parent_indices_set.len();
 
-            // Call algorithms::cohorts. It will use the persistent self.ancestor_cache as its memoization store.
-            dangling.remove(&new_bead_index); // Remove the new bead from dangling
-            let new_cohorts = algorithms::cohorts(
-                &sub_parents,
-                &sub_children,
-                &dangling,
-                &mut self.ancestor_cache, // Pass the Braid's persistent cache which has already
-                                          // been updated for everything in dangling except the new
-                                          // bead
-            );
+                // Find cohort range of parents. Iterate backwards.
+                for (i, cohort) in self.cohorts.iter().enumerate().rev() {
+                    let count_in_cohort = parent_indices_set
+                        .iter()
+                        .filter(|&p| cohort.contains(p))
+                        .count();
+                    if count_in_cohort > 0 {
+                        if idx_max.is_none() {
+                            idx_max = Some(i);
+                        }
+                        idx_min = Some(i);
+                        parents_found_count += count_in_cohort;
 
-            // Update cohort tail cache for new cohorts
-            for (cohort_idx, cohort) in new_cohorts.iter().enumerate() {
-                let sub_sub_parents = algorithms::sub_braid(cohort, &sub_parents);
-                let sub_sub_children = algorithms::reverse(&sub_sub_parents);
-                let cohort_tails = algorithms::tips(&sub_sub_children);
-                self.tail_cache
-                    .insert(self.cohorts.len() + cohort_idx, cohort_tails);
+                        if parents_found_count == total_parents {
+                            break;
+                        }
+                    }
+                }
+
+                let insertion_idx = if let (Some(max), Some(min)) = (idx_max, idx_min) {
+                    // Check if parents cover all internal tips of the latest parent cohort.
+                    // Use the cached tail (which represents internal tips).
+                    // If we span multiple cohorts (min < max), the effective tail of the merged group
+                    // is the tail of the latest cohort (max).
+                    let covers_tips = self.tail_cache[max]
+                        .iter()
+                        .all(|t| parent_indices_set.contains(t));
+
+                    // Merge Spanned Cohorts if necessary
+                    if min < max {
+                        // Merge cohorts (min+1)..=max into min.
+                        for i in (min + 1)..=max {
+                            let beads_to_merge: Vec<_> = self.cohorts[i].iter().cloned().collect();
+                            let target_cohort_idx = min;
+
+                            for &b in &beads_to_merge {
+                                let mut ancestors =
+                                    self.ancestor_cache.get(&b).cloned().unwrap_or_default();
+                                if let Some(parents) = self.parents.get(&b) {
+                                    for &p in parents {
+                                        if self.cohorts[target_cohort_idx].contains(&p) {
+                                            ancestors.insert(p);
+                                            if let Some(p_anc) = self.ancestor_cache.get(&p) {
+                                                ancestors.extend(p_anc);
+                                            }
+                                        }
+                                    }
+                                }
+                                self.ancestor_cache.insert(b, ancestors);
+                            }
+                            self.cohorts[target_cohort_idx].extend(beads_to_merge);
+                        }
+
+                        self.cohorts.drain((min + 1)..=max);
+                        // max is gone, min is the new head of this group
+                    }
+
+                    // If we cover tips, we extend (min + 1). Else we merge into min.
+                    if covers_tips {
+                        min + 1
+                    } else {
+                        min
+                    }
+                } else {
+                    0
+                };
+
+                // Apply changes
+                if insertion_idx == self.cohorts.len() {
+                    self.cohorts.push(HashSet::new());
+                }
+
+                // Calculate and insert ancestors for the new bead BEFORE inserting it into the cohort
+                let mut new_bead_ancestors = HashSet::new();
+                let target_cohort = &self.cohorts[insertion_idx];
+                for &p in &parent_indices_set {
+                    if target_cohort.contains(&p) {
+                        new_bead_ancestors.insert(p);
+                        if let Some(p_anc) = self.ancestor_cache.get(&p) {
+                            new_bead_ancestors.extend(p_anc);
+                        }
+                    }
+                }
+                self.ancestor_cache
+                    .insert(new_bead_index, new_bead_ancestors);
+
+                self.cohorts[insertion_idx].insert(new_bead_index);
+
+                // If we inserted before the end, we must merge all subsequent cohorts
+                if insertion_idx < self.cohorts.len() - 1 {
+                    // Similar merge logic as above, merging into insertion_idx
+                    for i in (insertion_idx + 1)..self.cohorts.len() {
+                        let beads_to_merge: Vec<_> = self.cohorts[i].iter().cloned().collect();
+                        let target_cohort_idx = insertion_idx;
+
+                        for &b in &beads_to_merge {
+                            let mut ancestors =
+                                self.ancestor_cache.get(&b).cloned().unwrap_or_default();
+                            if let Some(parents) = self.parents.get(&b) {
+                                for &p in parents {
+                                    if self.cohorts[target_cohort_idx].contains(&p) {
+                                        ancestors.insert(p);
+                                        if let Some(p_anc) = self.ancestor_cache.get(&p) {
+                                            ancestors.extend(p_anc);
+                                        }
+                                    }
+                                }
+                            }
+                            self.ancestor_cache.insert(b, ancestors);
+                        }
+                        self.cohorts[target_cohort_idx].extend(beads_to_merge);
+                    }
+                    self.cohorts.truncate(insertion_idx + 1);
+                }
+
+                // Update tail_cache for affected cohorts
+                self.tail_cache.truncate(insertion_idx);
+                for cohort in self.cohorts.iter().skip(insertion_idx) {
+                    let sub_p = algorithms::sub_braid(cohort, &self.parents);
+                    let sub_c = algorithms::reverse(&sub_p);
+                    self.tail_cache
+                        .push(algorithms::cohort_tail(cohort, &sub_p, &sub_c));
+                }
             }
+            ExtendStrategy::Cached => {
+                // --- Cached Strategy (Incremental Cache + Algo) ---
+                // Find the earliest cohort index among all parents.
+                let mut parent_indices: HashSet<usize> = parent_indices_set.clone();
+                let mut start_cohort_idx = self.cohorts.len();
 
-            // Add the new cohorts
-            for new_cohort in new_cohorts {
-                self.cohorts.push(new_cohort);
+                if !parent_indices.is_empty() {
+                    for (i, cohort) in self.cohorts.iter().enumerate().rev() {
+                        let found: Vec<usize> = parent_indices
+                            .iter()
+                            .copied()
+                            .filter(|p| cohort.contains(p))
+                            .collect();
+                        if !found.is_empty() {
+                            start_cohort_idx = i;
+                            for p in found {
+                                parent_indices.remove(&p);
+                            }
+                        }
+                        if parent_indices.is_empty() {
+                            break;
+                        }
+                    }
+                    if !parent_indices.is_empty() {
+                        start_cohort_idx = 0;
+                    }
+                } else {
+                    start_cohort_idx = 0;
+                }
+
+                // Backtrack for tip status change
+                if start_cohort_idx > 0 {
+                    start_cohort_idx -= 1;
+                }
+
+                // Backtrack for thick cohorts
+                while start_cohort_idx > 0 {
+                    let cohort = &self.cohorts[start_cohort_idx];
+                    let has_internal_links = cohort.iter().any(|&b| {
+                        self.parents
+                            .get(&b)
+                            .map_or(false, |parents| parents.iter().any(|p| cohort.contains(p)))
+                    });
+                    if has_internal_links {
+                        start_cohort_idx -= 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                let initial_cohort =
+                    if !self.cohorts.is_empty() && start_cohort_idx < self.cohorts.len() {
+                        self.cohorts[start_cohort_idx].clone()
+                    } else {
+                        algorithms::geneses(&self.parents)
+                    };
+
+                // Invalidate cache for beads that will be recomputed
+                // FIXME instead we should be recomputing these cache elements
+                if start_cohort_idx < self.cohorts.len() {
+                    for cohort in self.cohorts.iter().skip(start_cohort_idx + 1) {
+                        for &b in cohort {
+                            self.ancestor_cache.remove(&b);
+                        }
+                    }
+                }
+
+                // Truncate
+                if start_cohort_idx < self.cohorts.len() {
+                    self.cohorts.truncate(start_cohort_idx);
+                    self.tail_cache.truncate(start_cohort_idx);
+                }
+
+                // Recompute
+                let new_cohorts = algorithms::cohorts(
+                    &self.parents,
+                    &self.children,
+                    &initial_cohort,
+                    &mut self.ancestor_cache,
+                );
+
+                self.cohorts.extend(new_cohorts);
+
+                // Update tail cache
+                for cohort in self.cohorts.iter().skip(start_cohort_idx) {
+                    let sub_p = algorithms::sub_braid(cohort, &self.parents);
+                    let sub_c = algorithms::reverse(&sub_p);
+                    self.tail_cache
+                        .push(algorithms::cohort_tail(cohort, &sub_p, &sub_c));
+                }
+            }
+            ExtendStrategy::NoCache => {
+                // --- NoCache Strategy (Clear Cache + Algo) ---
+                self.ancestor_cache.clear();
+                let geneses = algorithms::geneses(&self.parents);
+                let initial_cohort: Cohort = HashSet::new(); // Empty initial cohort triggers genesis use in algo, but explicit is better
+
+                self.cohorts = algorithms::cohorts(
+                    &self.parents,
+                    &self.children,
+                    &geneses, // Using geneses as initial cohort
+                    &mut self.ancestor_cache,
+                );
+
+                self.tail_cache = self
+                    .cohorts
+                    .iter()
+                    .map(|c| {
+                        let sub_p = algorithms::sub_braid(c, &self.parents);
+                        let sub_c = algorithms::reverse(&sub_p);
+                        algorithms::cohort_tail(c, &sub_p, &sub_c)
+                    })
+                    .collect();
             }
         }
 

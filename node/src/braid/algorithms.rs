@@ -149,11 +149,10 @@ pub fn all_ancestors(
             if let Some(parent_set) = parents.get(&current) {
                 for parent_idx in parent_set {
                     // Check cache first for parent's ancestors
-                    if let Some(parent_ancestors) = cache.get(&parent_idx) {
+                    if let Some(parent_ancestors) = ancestors.get(&parent_idx) {
                         current_ancestors.extend(parent_ancestors.iter().copied());
                     }
-                    // Also check if parent was computed in this call
-                    if let Some(parent_ancestors) = ancestors.get(&parent_idx) {
+                    if let Some(parent_ancestors) = cache.get(&parent_idx) {
                         current_ancestors.extend(parent_ancestors.iter().copied());
                     }
                 }
@@ -222,7 +221,7 @@ pub fn cohorts(
         // Give the head no ancestors so that the algorithm doesn't look outside this cohort
         for h in &head {
             ancestors.insert(*h, BeadSet::new());
-            cache.insert(*h, BeadSet::new());
+            cache.insert(*h, BeadSet::new());  // Override cache for head to prevent pollution
         }
 
         cohort = head.clone();
@@ -251,6 +250,7 @@ pub fn cohorts(
 
             // Calculate ancestors for beads in the tail, which recursively generates all ancestors
             for t in tail.difference(&HashSet::from_iter(ancestors.keys().copied())) {
+                //&tail {
                 all_ancestors(*t, parents, &mut ancestors, cache);
             }
 
@@ -264,6 +264,7 @@ pub fn cohorts(
             // Check termination cases
             if dag_tips.is_subset(&cohort) {
                 head.clear(); // StopIteration and return
+                cache.extend(ancestors);
                 break; // and yield the current cohort
             }
             if !cohort.is_empty()
@@ -274,6 +275,7 @@ pub fn cohorts(
                 })
             {
                 head = tail.clone(); // Head of next cohort is tail from previous iteration
+                cache.extend(ancestors);
                 break; // Yield successful cohort
             }
             if cohort == oldcohort {
@@ -281,11 +283,12 @@ pub fn cohorts(
                 if dag_tips.is_subset(&tail) {
                     head.clear();
                     cohort.extend(&tail);
-                    tail.clear();
+                    //tail.clear();
+                    cache.extend(ancestors);
                     break; // Yield cohort+tail
                 }
                 cohort.extend(&tail);
-                continue;
+                //continue;
             }
         }
 
