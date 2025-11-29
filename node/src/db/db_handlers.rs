@@ -6,8 +6,8 @@ use crate::{
     utils::timestamp::MicrosecondTimestamp,
 };
 use bitcoin::{
-    ecdsa::Signature, BlockHash, BlockTime, BlockVersion, CompactTarget,
-    PublicKey, TxMerkleNode, Txid,
+    ecdsa::Signature, BlockHash, BlockTime, BlockVersion, CompactTarget, PublicKey, TxMerkleNode,
+    Txid,
 };
 use futures::lock::Mutex;
 use num::ToPrimitive;
@@ -176,12 +176,11 @@ impl DBHandler {
                         //Considering the index of the beads in braid will be same as the (insertion ids-1)
                         let bead_id = braid_data.index[&bead_to_insert.hash()];
                         //Constructing ancestor set, children set will be empty as it will become the next tip
-                        let mut ancestor_mapping: Relatives = Relatives::new();
+                        let ancestor_mapping: Relatives = Relatives::new();
                         let mut cache = HashMap::new();
                         crate::braid::algorithms::all_ancestors(
                             bead_id,
                             &braid_parent_set,
-                            &mut ancestor_mapping,
                             &mut cache,
                         );
                         let current_bead_parent_set = braid_parent_set[&bead_id].clone();
@@ -800,10 +799,7 @@ pub mod test {
                     filename, json_braid.description
                 );
             }
-            println!(
-                "Successfully completed testing file: {:?}",
-                filename
-            );
+            println!("Successfully completed testing file: {:?}", filename);
         } // End of braid iteration loop
     }
 }

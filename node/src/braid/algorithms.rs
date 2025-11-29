@@ -68,15 +68,9 @@ pub fn reverse(parents: &Relatives) -> Relatives {
     let mut children = Relatives::new();
 
     for (bead, bparents) in parents {
-        if !children.contains_key(bead) {
-            children.insert(*bead, HashSet::new());
-        }
-
+        children.entry(*bead).or_default();
         for parent in bparents {
-            if !children.contains_key(parent) {
-                children.insert(*parent, HashSet::new());
-            }
-            children.get_mut(parent).unwrap().insert(*bead);
+            children.entry(*parent).or_default().insert(*bead);
         }
     }
     children
@@ -120,15 +114,9 @@ pub fn generation(beads: &BeadSet, children: &Relatives) -> BeadSet {
 /// * `parents` - A `Relatives` map from bead index to its parent bead indices.
 /// * `ancestors` - A mutable `Relatives` map to store the computed ancestors. It will be updated in-place.
 /// * `cache` - A mutable `Relatives` map used to store and retrieve cached ancestor computations.
-pub fn all_ancestors(
-    bead: BeadIdx,
-    parents: &Relatives,
-    ancestors: &mut Relatives,
-    cache: &mut Relatives,
-) {
+pub fn all_ancestors(bead: BeadIdx, parents: &Relatives, ancestors: &mut Relatives) {
     // If already computed, use cached result
-    if let Some(cached) = cache.get(&bead) {
-        ancestors.insert(bead, cached.clone());
+    if ancestors.contains_key(&bead) {
         return;
     }
 
@@ -148,11 +136,7 @@ pub fn all_ancestors(
             // Update with ancestors of all parents
             if let Some(parent_set) = parents.get(&current) {
                 for parent_idx in parent_set {
-                    // Check cache first for parent's ancestors
                     if let Some(parent_ancestors) = ancestors.get(&parent_idx) {
-                        current_ancestors.extend(parent_ancestors.iter().copied());
-                    }
-                    if let Some(parent_ancestors) = cache.get(&parent_idx) {
                         current_ancestors.extend(parent_ancestors.iter().copied());
                     }
                 }
@@ -160,9 +144,6 @@ pub fn all_ancestors(
 
             // Insert into ancestors map
             ancestors.insert(current, current_ancestors.clone());
-
-            // Cache the result
-            cache.insert(current, current_ancestors);
         } else {
             // Mark as being processed
             work_stack.push((current, true));
@@ -170,7 +151,7 @@ pub fn all_ancestors(
             // Add any unprocessed parents to the stack
             if let Some(parent_set) = parents.get(&current) {
                 for parent_idx in parent_set {
-                    if !ancestors.contains_key(parent_idx) && !cache.contains_key(parent_idx) {
+                    if !ancestors.contains_key(parent_idx) {
                         work_stack.push((*parent_idx, false));
                     }
                 }
@@ -193,16 +174,17 @@ pub fn all_ancestors(
 /// * `parents` - A map from bead index to its parent indices, used for ancestry traversal.
 /// * `children` - A map from bead index to its child indices. Required parameter.
 /// * `initial_cohort` - Optional starting cohort (e.g., genesis beads). If `None`, it defaults to `geneses(parents)`.
+/// * `ancestor_cache` - A mutable Relatives map of ancestors. Returns only ancestors *within* the cohort.
 ///
 /// # Returns
 ///
 /// A generator that yields `Cohort`, where each set represents a **cohort** in topological order.
-/// Each cohort is disjoint and collectively they partition the beads in the Braid up to time `T`.
+/// Each cohort is disjoint and collectively they partition the beads in the Braid by graph cuts
 pub fn cohorts(
     parents: &Relatives,
     children: &Relatives,
     initial_cohort: &Cohort,
-    cache: &mut Relatives,
+    ancestor_cache: &mut Relatives,
 ) -> Vec<Cohort> {
     let dag_tips = tips(children);
     let mut cohort = if initial_cohort.is_empty() {
@@ -211,90 +193,86 @@ pub fn cohorts(
         initial_cohort.clone()
     };
     let mut oldcohort = Cohort::new();
-    let mut head = cohort.clone();
-    let mut tail = cohort.clone();
+    let mut head = cohort.clone(); // Starting boundary condition
+    let mut tail = cohort.clone(); //  New bead frontier, expands by BFS to collect new ancestors
     let mut result = Vec::new();
 
+    // Each iteration produces a cohort
     loop {
-        // Don't let head have ancestors to stop iteration
+        // Create a local ancestors map which lets us see cohort boundaries
         let mut ancestors = Relatives::new();
         // Give the head no ancestors so that the algorithm doesn't look outside this cohort
         for h in &head {
             ancestors.insert(*h, BeadSet::new());
-            cache.insert(*h, BeadSet::new());  // Override cache for head to prevent pollution
         }
-
+        // The starting cohort for iteration is the head beads
         cohort = head.clone();
 
-        // DFS search
+        // Expand until we find a graph cut (tail beads have same ancestors as cohort iteration)
         loop {
+            // The head being empty is the flag set by the termination conditions that we'r done.
             if head.is_empty() {
-                return result; // StopIteration and return
+                return result; // No cohort
             }
 
-            // Calculate new tail
+            // Add children of the newly added beads so we can compute their ancestors and see if
+            // they should join the cohort.
             for b in cohort.difference(&oldcohort) {
-                tail.extend(&children[b]); // Add the next generation to the tail
+                tail.extend(&children[b]);
             }
-            tail.extend(cohort.symmetric_difference(&oldcohort).copied()); // Add any beads in oldcohort but not in cohort
 
-            let cohort_has_tips = cohort.iter().any(|b| dag_tips.contains(b));
-            if cohort_has_tips {
-                tail.extend(dag_tips.difference(&cohort).copied()); // If there are any tips in cohort, add tips to tail
+            // If there are any tips in cohort, add tips to tail
+            if cohort.iter().any(|b| dag_tips.contains(b)) {
+                tail.extend(dag_tips.difference(&cohort));
             } else {
                 // If there are no tips in cohort subtract off cohort
                 tail.retain(|t| !cohort.contains(t));
             }
-
-            oldcohort = cohort.clone(); // Copy so we can tell if new tail has changed anything
+            // Copy so we can tell if new tail has changed anything in the next iteration and prevent looping
+            oldcohort.clear();
+            oldcohort.extend(&cohort);
 
             // Calculate ancestors for beads in the tail, which recursively generates all ancestors
-            for t in tail.difference(&HashSet::from_iter(ancestors.keys().copied())) {
-                //&tail {
-                all_ancestors(*t, parents, &mut ancestors, cache);
+            for t in &tail {
+                if !ancestors.contains_key(t) {
+                    all_ancestors(*t, parents, &mut ancestors);
+                }
             }
 
-            // Calculate cohort
-            cohort = ancestors
-                .values()
-                .flat_map(|set| set.iter())
-                .copied()
-                .collect(); // Union all ancestors with the cohort
+            // Calculate cohort, which is the union of all ancestors
+            cohort.clear();
+            cohort.extend(ancestors.values().flatten().copied());
 
-            // Check termination cases
+            // We've reached the end of the Braid, yield everything left as the cohort
             if dag_tips.is_subset(&cohort) {
-                head.clear(); // StopIteration and return
-                cache.extend(ancestors);
-                break; // and yield the current cohort
+                head.clear();
+                break;
             }
-            if !cohort.is_empty()
-                && tail.iter().all(|t| {
-                    ancestors
-                        .get(t)
-                        .map_or(false, |ancestors_of_t| ancestors_of_t == &cohort)
-                })
-            {
+            // If everything in the tail is exactly the same and the same as the cohort, yield
+            if !cohort.is_empty() && tail.iter().all(|t| ancestors.get(t) == Some(&cohort)) {
                 head = tail.clone(); // Head of next cohort is tail from previous iteration
-                cache.extend(ancestors);
-                break; // Yield successful cohort
+                break;
             }
             if cohort == oldcohort {
-                // Cohort hasn't changed, we may be looping
+                // We hit the tips. Yield cohort (union of all tail ancestors) + tail
                 if dag_tips.is_subset(&tail) {
                     head.clear();
                     cohort.extend(&tail);
-                    //tail.clear();
-                    cache.extend(ancestors);
-                    break; // Yield cohort+tail
+                    break;
+                } else {
+                    // We haven't hit any tips, add the tail to the cohort so we don't loop here
+                    cohort.extend(&tail);
                 }
-                cohort.extend(&tail);
-                //continue;
             }
         }
 
+        // Add the computed ancestor set *within* the cohort to the cache
+        ancestor_cache.extend(ancestors);
+        // We found a cohort, there is no oldcohort
         oldcohort.clear();
         if !cohort.is_empty() {
-            result.push(cohort.clone());
+            result.push(cohort);
+            println!("Adding result cohort: {:?}", result.last());
         }
     }
 }
@@ -369,8 +347,9 @@ pub fn cohort_head(cohort: &Cohort, parents: &Relatives, children: &Relatives) -
 /// relationships between those beads are retained.
 ///
 /// This is especially useful in contexts like:
-/// - **Pruning** parts of the DAG.
-/// - **Cohort isolation** or localized validation.
+/// - **Pruning** parts of the DAG
+/// - **Cohort isolation** for localized validation. sub_braid works on
+///     parents/children/ancestors/descendants equally well.
 /// - Visualization of subgraphs or ancestry scopes.
 ///
 /// The result has the properties:
@@ -398,20 +377,6 @@ pub fn sub_braid(beads: &BeadSet, parents: &Relatives) -> Relatives {
             (*b, parent_set)
         })
         .collect()
-}
-
-/// Truncate cache entries to only contain relationships within the specified cohort.
-/// This function filters out any ancestors/descendants that are outside the cohort boundary.
-pub fn truncate_cache_to_cohort(cache: &mut Relatives, cohort: &Cohort) {
-    let keys_to_process: Vec<BeadIdx> = cache.keys().copied().collect();
-
-    for bead_idx in keys_to_process {
-        if let Some(relatives) = cache.get_mut(&bead_idx) {
-            // Keep only relatives that are within the cohort
-            let intra_cohort_relatives: BeadSet = relatives.intersection(cohort).copied().collect();
-            *relatives = intra_cohort_relatives;
-        }
-    }
 }
 
 /// Computes the **descendant work** for each bead in the Braid.
@@ -448,13 +413,11 @@ pub fn descendant_work(
     for cohort in rev_cohorts {
         let sub_children = sub_braid(&cohort, children);
         let mut sub_descendants = HashMap::new();
-        // Use a local cache for sub-cohort computation to avoid polluting the global cache
-        let mut local_cache = HashMap::new();
 
         // Compute descendants by passing children here instead of parents
         // Call for each bead in the cohort
         for &bead in &cohort {
-            all_ancestors(bead, &sub_children, &mut sub_descendants, &mut local_cache);
+            all_ancestors(bead, &sub_children, &mut sub_descendants);
         }
 
         for b in &cohort {

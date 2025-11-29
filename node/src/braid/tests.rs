@@ -8,6 +8,90 @@ use bitcoin::Work;
 use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
 use std::collections::{HashMap, HashSet};
 
+/// Validates that caches are populated and all relationships are localized within cohorts
+fn check_cache(braid: &Braid) {
+    println!("\n=== Cache Validation ===");
+
+    // Count beads across all cohorts
+    let total_beads: usize = braid.cohorts.iter().map(|c| c.len()).sum();
+
+    // Check ancestor_cache population
+    println!("Ancestor cache size: {}", braid.ancestor_cache.len());
+    println!("Total beads in cohorts: {}", total_beads);
+
+    // For linear blockchain (single bead per cohort), each bead should have an entry with an empty set
+    // For braids with multiple beads per cohort, entries should be populated with intra-cohort ancestors
+
+    // Check descendant_cache population
+    println!("Descendant cache size: {}", braid.descendant_cache.len());
+
+    // Descendant cache should have entries for beads that have descendants in their cohort
+    // For linear chains, this might be empty or have entries with empty sets
+    // The important thing is to check that populated entries are properly localized
+
+    // Check tail_cache population
+    println!("Tail cache size: {}", braid.tail_cache.len());
+    assert_eq!(
+        braid.tail_cache.len(),
+        braid.cohorts.len(),
+        "Tail cache should have one entry per cohort"
+    );
+
+    // Build a map from bead to its cohort for validation
+    let mut bead_to_cohort: HashMap<BeadIdx, usize> = HashMap::new();
+    for (cohort_idx, cohort) in braid.cohorts.iter().enumerate() {
+        for &bead_idx in cohort {
+            bead_to_cohort.insert(bead_idx, cohort_idx);
+        }
+    }
+
+    // Validate ancestor_cache: all ancestors should be within the same cohort
+    let mut ancestor_violations = 0;
+    for (bead_idx, ancestors) in &braid.ancestor_cache {
+        if let Some(&cohort_idx) = bead_to_cohort.get(bead_idx) {
+            let cohort = &braid.cohorts[cohort_idx];
+            for ancestor in ancestors {
+                if !cohort.contains(ancestor) {
+                    ancestor_violations += 1;
+                    println!(
+                        "Bead {} in cohort {} has ancestor {} outside the cohort",
+                        bead_idx, cohort_idx, ancestor
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(
+        ancestor_violations, 0,
+        "Found {} ancestors outside their cohort boundaries",
+        ancestor_violations
+    );
+
+    // Validate descendant_cache: all descendants should be within the same cohort
+    let mut descendant_violations = 0;
+    for (bead_idx, descendants) in &braid.descendant_cache {
+        if let Some(&cohort_idx) = bead_to_cohort.get(bead_idx) {
+            let cohort = &braid.cohorts[cohort_idx];
+            for descendant in descendants {
+                if !cohort.contains(descendant) {
+                    descendant_violations += 1;
+                    println!(
+                        "⚠️  Bead {} in cohort {} has descendant {} outside the cohort",
+                        bead_idx, cohort_idx, descendant
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(
+        descendant_violations, 0,
+        "Found {} descendants outside their cohort boundaries",
+        descendant_violations
+    );
+
+    println!("All cache entries are properly localized within cohorts");
+}
+
 /// Helper to create Work from u64 for testing
 fn work(v: u64) -> Work {
     let mut bytes = [0u8; 32];
@@ -148,65 +232,54 @@ pub fn test_non_head_cohort_extension() {
     //
     // The braid looks like this:
     //
-    // 0 - 1 - 2 - 4 - 5 - 6
-    //      \ /       /
-    //       3 ------/
-    //
-    // parents dict for this example:
-    // 0 => []
-    // 1 => [0]
-    // 2 => [1, 3]
-    // 3 => [1]
-    // 4 => [2]
-    // 5 => [3,4]
-    // 6 => [5]
+    // 0 - 1 - 2 - 4 - 6
+    //       \   /    /
+    //         3-----5
     //
     // Test that the cohorts after 0,1,2,3,4 are added are:
-    //   {0} {1,2,3} {4}
+    //   {0} {1} {2,3} {4}
     // After adding 5, the cohorts must be:
-    //   {0} {1,2,3,4,5}
+    //   {0} {1} {2,3,4,5} with tips {4, 5}
     // After adding 6, the cohorts must be:
-    //   {0} {1,2,3,4,5} {6}
+    //   {0} {1} {2,3,4,5} {6}
     //
 
     // Create initial braid with beads 0, 1, 2, 3, 4
     let mut test_braid = make_test_braid!(
         0 => [],
         1 => [0],
-        2 => [1, 3],
+        2 => [1],
         3 => [1],
-        4 => [2],
+        4 => [2,3],
     );
 
+    // This should print [{0}, {1}, {2,3}, {4}]
     println!("Cohorts after adding 0,1,2,3,4: {:?}", test_braid.cohorts);
 
-    // Verify correct behavior: beads 1 and 3 should be in the same cohort
+    // Verify correct behavior: beads 2 and 3 should be in the same cohort
     // because they both have the same ancestors {0}, making them topologically equivalent
     assert_eq!(
         test_braid.cohorts.len(),
         4,
-        "Correct behavior: should have 4 cohorts: {{0}} {{1,3}} {{2}} {{4}}"
+        "Correct behavior: should have 4 cohorts: {{0}} {{1}} {{2,3}} {{4}}"
     );
 
     // Add bead 5 (references both 3 and 4, which should merge middle cohorts)
-    let test_bead_5 = emit_Bead(&[&test_braid.beads[3], &test_braid.beads[4]]);
+    let test_bead_5 = emit_Bead(&[&test_braid.beads[3]]);
     test_braid.extend(&test_bead_5);
 
     println!("Cohorts after adding 5: {:?}", test_braid.cohorts);
 
-    // Expected: adding 5 should merge cohorts {1,3}, {2}, and {4} into one
-    // Result: {1, 2, 3, 4} (bead 5 is separate as a tip)
+    // Expected: adding 5 should merge cohorts {2,3}, {4} into one and add itself
+    // Result: {2, 3, 4, 5}
     assert_eq!(
         test_braid.cohorts.len(),
         3,
-        "After adding bead 5 (references 3 and 4), should have 3 cohorts: {{0}} {{1,2,3,4}} {{5}}"
+        "After adding bead 5 (references 3 and 4), should have 3 cohorts: {{0}} {{1}}, {{2,3,4,5}}"
     );
 
     // Add bead 6 (references 5, which is now in the head cohort)
-    let test_bead_6 = {
-        let bead_5 = &test_braid.beads[5];
-        emit_Bead(&[bead_5])
-    };
+    let test_bead_6 = emit_Bead(&[&test_braid.beads[4], &test_braid.beads[5]]);
     test_braid.extend(&test_bead_6);
 
     println!("Cohorts after adding 6: {:?}", test_braid.cohorts);
@@ -215,7 +288,7 @@ pub fn test_non_head_cohort_extension() {
     assert_eq!(
         test_braid.cohorts.len(),
         4,
-        "After adding bead 6, should have 4 cohorts: {{0}} {{1,2,3,4}} {{5}} {{6}}"
+        "After adding bead 6, should have 4 cohorts: {{0}} {{1}} {{2,3,4,5}} {{6}}"
     );
 }
 
@@ -406,22 +479,25 @@ pub fn test_json_braid_end_to_end() {
             );
         }
 
+        // Validate cache integrity before checking cohort structure
+        check_cache(&braid);
         // Compare cohorts by index (much more readable than hashes)
-        //        let test_cohort_indices: Vec<HashSet<_>> = braid
-        //            .cohorts
-        //            .iter()
-        //            .map(|cohort| cohort.iter().copied().collect())
-        //            .collect();
-        //        let ref_cohort_indices: Vec<HashSet<_>> = reference_braid
-        //            .cohorts
-        //            .iter()
-        //            .map(|cohort| cohort.iter().copied().collect())
-        //            .collect();
-        //        assert_eq!(
-        //            test_cohort_indices, ref_cohort_indices,
-        //            "File {}: Cohorts mismatch.\n  Expected: {:?}\n  Got: {:?}",
-        //            filename, ref_cohort_indices, test_cohort_indices
-        //        );
+        let test_cohort_indices: Vec<HashSet<_>> = braid
+            .cohorts
+            .iter()
+            .map(|cohort| cohort.iter().copied().collect())
+            .collect();
+        let ref_cohort_indices: Vec<HashSet<_>> = reference_braid
+            .cohorts
+            .iter()
+            .map(|cohort| cohort.iter().copied().collect())
+            .collect();
+        assert_eq!(
+            test_cohort_indices, ref_cohort_indices,
+            "File {}: Cohorts mismatch.\n  Expected: {:?}\n  Got: {:?}",
+            filename, ref_cohort_indices, test_cohort_indices
+        );
+
         let test_cohort_hashes: Vec<HashSet<_>> = braid
             .cohorts
             .iter()

@@ -3,7 +3,8 @@
 // and do NOT depend on the Bead struct or braid integration.
 
 use super::algorithms::*;
-use crate::braid::{BeadIdx, BeadSet, Cohort, Relatives};
+use crate::braid::BeadIdx;
+use crate::braid::{BeadSet, Relatives};
 use crate::relatives;
 use bitcoin::Work;
 use std::collections::{HashMap, HashSet};
@@ -19,58 +20,6 @@ fn work(v: u64) -> Work {
     let mut bytes = [0u8; 32];
     bytes[24..32].copy_from_slice(&v.to_be_bytes());
     Work::from_be_bytes(bytes)
-}
-
-/// Check a cohort using check_cohort_ancestors in both directions.
-/// Translated directly from Python implementation.
-fn check_cohort(
-    cohort: &Cohort,
-    parents: &Relatives,
-    children: &Relatives,
-    cache: &mut Relatives,
-) -> bool {
-    let result1 = check_cohort_ancestors(cohort, parents, children, cache);
-    // Use separate cache for reversed direction since cache keys would conflict
-    let mut reverse_cache = Relatives::new();
-    let result2 = check_cohort_ancestors(cohort, children, parents, &mut reverse_cache);
-    result1 && result2
-}
-
-/// Check a cohort by determining the set of ancestors of all beads.
-/// This computation is done over the ENTIRE DAG since any ancestor could have a long dangling path leading to this cohort.
-/// This will not determine if a cohort has valid sub-cohorts since the merging of any two or more adjacent cohorts is still a valid cohort.
-///
-/// This checks in one direction only, looking at the ancestors of `cohort`. To check in the other direction, reverse the order of the parents and children arguments.
-/// Translated directly from Python implementation.
-fn check_cohort_ancestors(
-    cohort: &Cohort,
-    parents: &Relatives,
-    children: &Relatives,
-    cache: &mut Relatives,
-) -> bool {
-    let mut ancestors = Relatives::new();
-    let mut allancestors = BeadSet::new();
-
-    let head = cohort_head(cohort, parents, children);
-
-    for &bead in cohort {
-        all_ancestors(bead, parents, &mut ancestors, cache);
-    }
-    for bead_ancestors in ancestors.values() {
-        allancestors.extend(bead_ancestors);
-    }
-
-    allancestors.retain(|a| !cohort.contains(a));
-
-    if !allancestors.is_empty() {
-        let gen_children = generation(&allancestors, children);
-        let diff: BeadSet = gen_children.difference(&allancestors).copied().collect();
-        if diff != head {
-            return false;
-        }
-    }
-
-    true
 }
 
 // ============================================================================
@@ -101,6 +50,12 @@ pub fn test_reverse() {
 pub fn test_genesis_empty() {
     let parents = relatives!();
     let genesis_indices = geneses(&parents);
+    cohorts(
+        &parents,
+        &relatives!(),
+        &BeadSet::new(),
+        &mut Relatives::new(),
+    );
     assert_eq!(genesis_indices, HashSet::new());
 }
 
@@ -109,7 +64,9 @@ pub fn test_genesis_single() {
     let parents = relatives!(
         0 => [],
     );
+    let children = reverse(&parents);
     let genesis_indices = geneses(&parents);
+    cohorts(&parents, &children, &BeadSet::new(), &mut Relatives::new());
     assert_eq!(genesis_indices, HashSet::from([0]));
 }
 
@@ -188,14 +145,13 @@ pub fn test_all_ancestors_simple() {
         3 => [2],
     );
 
-    let mut ancestors = relatives!();
     let mut cache = HashMap::new();
-    all_ancestors(3, &parents, &mut ancestors, &mut cache);
+    all_ancestors(3, &parents, &mut cache);
 
-    assert_eq!(ancestors.get(&0), Some(&HashSet::new()));
-    assert_eq!(ancestors.get(&1), Some(&HashSet::from([0])));
-    assert_eq!(ancestors.get(&2), Some(&HashSet::from([0, 1])));
-    assert_eq!(ancestors.get(&3), Some(&HashSet::from([0, 1, 2])));
+    assert_eq!(cache.get(&0), Some(&HashSet::new()));
+    assert_eq!(cache.get(&1), Some(&HashSet::from([0])));
+    assert_eq!(cache.get(&2), Some(&HashSet::from([0, 1])));
+    assert_eq!(cache.get(&3), Some(&HashSet::from([0, 1, 2])));
 }
 
 #[test]
@@ -241,6 +197,35 @@ pub fn test_cohorts_twotip() {
     assert_eq!(twotip_cohorts.len(), 2);
     assert!(twotip_cohorts[0] == HashSet::from([0]));
     assert!(twotip_cohorts[1] == HashSet::from([1, 2]));
+}
+
+#[test]
+pub fn test_cohorts_non_head_cohort_extension() {
+    let parents = relatives!(
+        0 => [],
+        1 => [0],
+        2 => [1],
+        3 => [1],
+        4 => [2,3],
+        5 => [3],
+        6 => [4,5]
+    );
+
+    let children = reverse(&parents);
+    let geneses_set = geneses(&parents);
+    let mut cache = HashMap::new();
+    let nhce_cohorts = cohorts(&parents, &children, &geneses_set, &mut cache);
+
+    println!("Cohorts: {:?}", nhce_cohorts);
+    println!("Ancestor cache: {:?}", cache);
+    println!("Parents: {:?}", parents);
+    println!("Children: {:?}", children);
+    // Each bead should be in its own cohort since it's a simple chain
+    assert_eq!(nhce_cohorts.len(), 4);
+    assert!(nhce_cohorts[0] == HashSet::from([0]));
+    assert!(nhce_cohorts[1] == HashSet::from([1]));
+    assert!(nhce_cohorts[2] == HashSet::from([2, 3, 4, 5]));
+    assert!(nhce_cohorts[3] == HashSet::from([6]));
 }
 
 #[test]
@@ -304,40 +289,6 @@ pub fn test_highest_work_path_simple() {
 
     // Should return one of the valid paths
     assert!(path == vec![0, 1, 3] || path == vec![0, 2]);
-}
-
-#[test]
-pub fn test_check_cohort() {
-    let parents = relatives!(
-        0 => [],
-        1 => [0],
-        2 => [0],
-        3 => [1, 2],
-    );
-
-    let children = reverse(&parents);
-
-    // Single bead should always be a valid cohort
-    let single_bead_cohort = HashSet::from([0]);
-    let mut cache = HashMap::new();
-    assert!(check_cohort(
-        &single_bead_cohort,
-        &parents,
-        &children,
-        &mut cache
-    ));
-
-    let single_bead_cohort_2 = HashSet::from([3]);
-    assert!(check_cohort(
-        &single_bead_cohort_2,
-        &parents,
-        &children,
-        &mut cache
-    ));
-
-    // This should be a valid cohort (connected subgraph)
-    let valid_cohort = HashSet::from([1, 2, 3]);
-    assert!(check_cohort(&valid_cohort, &parents, &children, &mut cache));
 }
 
 #[test]
@@ -423,45 +374,6 @@ pub fn test_generation() {
     assert_eq!(gen2, HashSet::new());
 }
 
-#[test]
-pub fn test_check_cohort_ancestors() {
-    let parents = relatives!(
-        0 => [],
-        1 => [0],
-        2 => [0],
-        3 => [1, 2],
-    );
-
-    let children = reverse(&parents);
-
-    // Single bead should always pass check_cohort_ancestors
-    let single_cohort = HashSet::from([0]);
-    let mut cache = HashMap::new();
-    assert!(check_cohort_ancestors(
-        &single_cohort,
-        &parents,
-        &children,
-        &mut cache
-    ));
-
-    let single_cohort_2 = HashSet::from([3]);
-    assert!(check_cohort_ancestors(
-        &single_cohort_2,
-        &parents,
-        &children,
-        &mut cache
-    ));
-
-    // Connected subgraph should pass
-    let connected_cohort = HashSet::from([1, 2, 3]);
-    assert!(check_cohort_ancestors(
-        &connected_cohort,
-        &parents,
-        &children,
-        &mut cache
-    ));
-}
-
 // ============================================================================
 // Ancestors Cache Tests
 // ============================================================================
@@ -476,17 +388,16 @@ pub fn test_all_ancestors_cache_miss_basic() {
         3 => [2],
     );
 
-    let mut ancestors = relatives!();
     let mut cache = HashMap::new();
 
     // First call - should compute and cache results for bead 3 and its dependencies
-    all_ancestors(3, &parents, &mut ancestors, &mut cache);
+    all_ancestors(3, &parents, &mut cache);
 
     // Verify ancestors were computed correctly for requested bead and its dependencies
-    assert_eq!(ancestors.get(&0), Some(&HashSet::new()));
-    assert_eq!(ancestors.get(&1), Some(&HashSet::from([0])));
-    assert_eq!(ancestors.get(&2), Some(&HashSet::from([0, 1])));
-    assert_eq!(ancestors.get(&3), Some(&HashSet::from([0, 1, 2])));
+    assert_eq!(cache.get(&0), Some(&HashSet::new()));
+    assert_eq!(cache.get(&1), Some(&HashSet::from([0])));
+    assert_eq!(cache.get(&2), Some(&HashSet::from([0, 1])));
+    assert_eq!(cache.get(&3), Some(&HashSet::from([0, 1, 2])));
 
     // Verify cache was populated only for beads that were explicitly requested
     // Cache contains only the original requested bead (3), not its dependencies
@@ -503,19 +414,15 @@ pub fn test_all_ancestors_cache_hit_basic() {
         3 => [2],
     );
 
-    let mut ancestors = relatives!();
     let mut cache = HashMap::new();
 
     // Pre-populate cache with known result for bead 3 only
     cache.insert(3, HashSet::from([0, 1, 2]));
 
     // Call with bead that is already cached
-    all_ancestors(3, &parents, &mut ancestors, &mut cache);
+    all_ancestors(3, &parents, &mut cache);
 
     // Should use cached results without recomputation
-    assert_eq!(ancestors.get(&3), Some(&HashSet::from([0, 1, 2])));
-
-    // Cache should remain unchanged for bead 3
     assert_eq!(cache.get(&3), Some(&HashSet::from([0, 1, 2])));
 }
 
@@ -529,7 +436,6 @@ pub fn test_all_ancestors_cache_partial_hit() {
         3 => [2],
     );
 
-    let mut ancestors = relatives!();
     let mut cache = HashMap::new();
 
     // Pre-populate cache with result for bead 2
@@ -537,14 +443,10 @@ pub fn test_all_ancestors_cache_partial_hit() {
     // Note: 3 is NOT cached
 
     // Call with beads 2 and 3 - 2 should use cache, 3 should compute
-    all_ancestors(2, &parents, &mut ancestors, &mut cache);
-    all_ancestors(3, &parents, &mut ancestors, &mut cache);
+    all_ancestors(2, &parents, &mut cache);
+    all_ancestors(3, &parents, &mut cache);
 
     // Verify results for both beads
-    assert_eq!(ancestors.get(&2), Some(&HashSet::from([0, 1])));
-    assert_eq!(ancestors.get(&3), Some(&HashSet::from([0, 1, 2])));
-
-    // Verify cache was updated with newly computed result for bead 3
     assert_eq!(cache.get(&2), Some(&HashSet::from([0, 1])));
     assert_eq!(cache.get(&3), Some(&HashSet::from([0, 1, 2])));
 }
@@ -559,24 +461,23 @@ pub fn test_all_ancestors_cache_complex_dag() {
         3 => [1, 2],  // Merge point
     );
 
-    let mut ancestors = relatives!();
     let mut cache = HashMap::new();
 
     // First compute ancestors for bead 3
-    all_ancestors(3, &parents, &mut ancestors, &mut cache);
+    all_ancestors(3, &parents, &mut cache);
 
     // Verify complex ancestry relationships
-    assert_eq!(ancestors.get(&3), Some(&HashSet::from([0, 1, 2])));
-    assert_eq!(ancestors.get(&2), Some(&HashSet::from([0])));
-    assert_eq!(ancestors.get(&1), Some(&HashSet::from([0])));
-    assert_eq!(ancestors.get(&0), Some(&HashSet::new()));
+    assert_eq!(cache.get(&3), Some(&HashSet::from([0, 1, 2])));
+    assert_eq!(cache.get(&2), Some(&HashSet::from([0])));
+    assert_eq!(cache.get(&1), Some(&HashSet::from([0])));
+    assert_eq!(cache.get(&0), Some(&HashSet::new()));
 
     // Now call again with bead 3 - should use cache immediately
-    ancestors.clear();
-    all_ancestors(3, &parents, &mut ancestors, &mut cache);
+    cache.clear();
+    all_ancestors(3, &parents, &mut cache);
 
     // Should get cached results immediately
-    assert_eq!(ancestors.get(&3), Some(&HashSet::from([0, 1, 2])));
+    assert_eq!(cache.get(&3), Some(&HashSet::from([0, 1, 2])));
 }
 
 #[test]
@@ -589,24 +490,23 @@ pub fn test_all_ancestors_cache_multiple_calls() {
         3 => [0],     // Alternative path
     );
 
-    let mut ancestors = relatives!();
     let mut cache = HashMap::new();
 
     // First call - compute ancestors for bead 2
-    all_ancestors(2, &parents, &mut ancestors, &mut cache);
-    assert_eq!(ancestors.get(&2), Some(&HashSet::from([0, 1])));
+    all_ancestors(2, &parents, &mut cache);
+    assert_eq!(cache.get(&2), Some(&HashSet::from([0, 1])));
 
     // Second call - compute ancestors for bead 3
-    ancestors.clear();
-    all_ancestors(3, &parents, &mut ancestors, &mut cache);
-    assert_eq!(ancestors.get(&3), Some(&HashSet::from([0])));
+    cache.clear();
+    all_ancestors(3, &parents, &mut cache);
+    assert_eq!(cache.get(&3), Some(&HashSet::from([0])));
 
     // Third call - ask for both previously computed beads
-    ancestors.clear();
-    all_ancestors(2, &parents, &mut ancestors, &mut cache);
-    all_ancestors(3, &parents, &mut ancestors, &mut cache);
-    assert_eq!(ancestors.get(&2), Some(&HashSet::from([0, 1])));
-    assert_eq!(ancestors.get(&3), Some(&HashSet::from([0])));
+    cache.clear();
+    all_ancestors(2, &parents, &mut cache);
+    all_ancestors(3, &parents, &mut cache);
+    assert_eq!(cache.get(&2), Some(&HashSet::from([0, 1])));
+    assert_eq!(cache.get(&3), Some(&HashSet::from([0])));
 
     // Verify cache contains both requested beads
     assert!(cache.contains_key(&0));
@@ -624,20 +524,14 @@ pub fn test_all_ancestors_cache_isolated_beads() {
         2 => [],  // Yet another isolated genesis
     );
 
-    let mut ancestors = relatives!();
     let mut cache = HashMap::new();
 
     // Compute ancestors for isolated beads
     for bead in [0, 1, 2] {
-        all_ancestors(bead, &parents, &mut ancestors, &mut cache);
+        all_ancestors(bead, &parents, &mut cache);
     }
 
     // All should have empty ancestor sets
-    assert_eq!(ancestors.get(&0), Some(&HashSet::new()));
-    assert_eq!(ancestors.get(&1), Some(&HashSet::new()));
-    assert_eq!(ancestors.get(&2), Some(&HashSet::new()));
-
-    // Cache should reflect this
     assert_eq!(cache.get(&0), Some(&HashSet::new()));
     assert_eq!(cache.get(&1), Some(&HashSet::new()));
     assert_eq!(cache.get(&2), Some(&HashSet::new()));

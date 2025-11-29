@@ -127,25 +127,12 @@ use std::{
     str::FromStr,
 };
 
-use bitcoin::pow::CompactTargetExt;
 #[cfg(test)]
 use bitcoin::Txid;
-use bitcoin::{
-    BlockHash, BlockTime, BlockVersion, CompactTarget, EcdsaSighashType, PublicKey, TxMerkleNode,
-};
-use rand::rngs::OsRng;
-use rand::{thread_rng, RngCore};
-use secp256k1::{Message, Secp256k1, SecretKey};
 use serde::Deserialize;
-use std::sync::atomic::{AtomicU32, Ordering};
-
-// Static counter for unique nonce generation across all beads
-static NONCE_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 #[cfg(test)]
 use crate::braid::Braid;
-#[cfg(test)]
-use crate::utils::timestamp::MicrosecondTimestamp;
 
 // JSONBraid structure for loading test data from JSON files with HashSet for algorithm compatibility
 #[derive(Clone, Debug, Deserialize)]
@@ -164,6 +151,7 @@ pub struct JSONBraid {
     pub highest_work_path: Vec<crate::braid::BeadIdx>,
 }
 
+#[cfg(test)]
 impl JSONBraid {
     /// Load and convert from JSON file to HashSet format
     /// Panics if the file cannot be loaded, with a clear error message including the filename
@@ -279,8 +267,12 @@ impl JSONBraid {
 }
 
 /// Directory containing braid test files (relative to project root)
+#[cfg(test)]
 pub const BRAID_TEST_DIR: &str = "tests/braids";
+#[cfg(test)]
+use crate::utils::MicrosecondTimestamp;
 
+#[cfg(test)]
 pub struct TestUnCommittedMetadataBuilder {
     extra_nonce_1: u32,
     extra_nonce_2: u32,
@@ -461,6 +453,10 @@ impl TestBeadBuilder {
         }
     }
 }
+
+#[cfg(test)]
+use rand::{thread_rng, RngCore};
+#[cfg(test)]
 fn generate_random_public_key_string() -> String {
     let secp = Secp256k1::new();
     let mut rng = thread_rng();
@@ -469,6 +465,21 @@ fn generate_random_public_key_string() -> String {
     public_key.to_string()
 }
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicU32, Ordering};
+// Static counter for unique nonce generation across all beads
+#[cfg(test)]
+static NONCE_COUNTER: AtomicU32 = AtomicU32::new(1);
+
+#[cfg(test)]
+use bitcoin::{
+    pow::CompactTargetExt, BlockHash, BlockTime, BlockVersion, CompactTarget, EcdsaSighashType,
+    PublicKey, TxMerkleNode,
+};
+#[cfg(test)]
+use rand::rngs::OsRng;
+#[cfg(test)]
+use secp256k1::{Message, Secp256k1, SecretKey};
 #[cfg(test)]
 #[allow(non_snake_case)]
 pub fn emit_Bead(parents: &[&crate::bead::Bead]) -> crate::bead::Bead {
