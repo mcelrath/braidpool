@@ -10,9 +10,7 @@ use std::time::UNIX_EPOCH;
 
 /// A timestamp representing microseconds since the Unix epoch
 #[repr(transparent)]
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct MicrosecondTimestamp(u64);
 
 impl MicrosecondTimestamp {

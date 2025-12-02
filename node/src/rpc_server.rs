@@ -276,7 +276,7 @@ where
 pub async fn run_rpc_server(
     braid_shared_pointer: Arc<RwLock<Braid>>,
     bind_address: &str,
-) -> Result<SocketAddr, ()> {
+) -> Result<SocketAddr, std::io::Error> {
     //Initializing the middleware
     let rpc_middleware =
         jsonrpsee::server::middleware::rpc::RpcServiceBuilder::new().layer_fn(LoggingMiddleware);
@@ -284,10 +284,9 @@ pub async fn run_rpc_server(
     let server = jsonrpsee::server::Server::builder()
         .set_rpc_middleware(rpc_middleware)
         .build(bind_address)
-        .await
-        .unwrap();
+        .await?;
     //listening address for incoming requests/connection
-    let addr = server.local_addr().unwrap();
+    let addr = server.local_addr()?;
     //context for the served server
     let rpc_impl = RpcServerImpl::new(braid_shared_pointer);
     let handle = server.start(rpc_impl.into_rpc());
@@ -321,11 +320,10 @@ pub async fn test_extend_rpc() {
 
     let braid: Arc<RwLock<braid::Braid>> = Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
 
-    let server_addr = "127.0.0.1:6682";
-    let _ = run_rpc_server(Arc::clone(&braid), server_addr)
-        .await
-        .unwrap();
-    let target_uri = format!("http://{}", server_addr);
+    let Some(actual_addr) = spawn_test_server(Arc::clone(&braid)).await else {
+        return;
+    };
+    let target_uri = format!("http://{}", actual_addr);
     let client: HttpClient = HttpClient::builder().build(target_uri).unwrap();
 
     let new_bead = create_test_bead(2, Some(test_bead1.hash()));
@@ -356,18 +354,10 @@ pub async fn test_same_bead_extend() {
     let braid: Arc<RwLock<braid::Braid>> = Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
 
     //Initializing the test server
-    let rpc_middleware =
-        jsonrpsee::server::middleware::rpc::RpcServiceBuilder::new().layer_fn(LoggingMiddleware);
-    let server = jsonrpsee::server::Server::builder()
-        .set_rpc_middleware(rpc_middleware)
-        .build("127.0.0.1:8889")
-        .await
-        .unwrap();
-    let rpc_impl = RpcServerImpl::new(braid);
-    let _handle = server.start(rpc_impl.into_rpc());
-
-    let server_addr = "127.0.0.1:8889";
-    let target_uri = format!("http://{}", server_addr);
+    let Some(actual_addr) = spawn_test_server(braid).await else {
+        return;
+    };
+    let target_uri = format!("http://{}", actual_addr);
     let client: HttpClient = HttpClient::builder().build(target_uri).unwrap();
 
     let new_bead = create_test_bead(2, Some(test_bead1.hash()));
@@ -400,18 +390,10 @@ pub async fn test_cohort_count_rpc() {
 
     let braid: Arc<RwLock<braid::Braid>> = Arc::new(RwLock::new(braid::Braid::new(genesis_beads)));
     //Initializing the test server
-    let rpc_middleware =
-        jsonrpsee::server::middleware::rpc::RpcServiceBuilder::new().layer_fn(LoggingMiddleware);
-    let server = jsonrpsee::server::Server::builder()
-        .set_rpc_middleware(rpc_middleware)
-        .build("127.0.0.1:9000")
-        .await
-        .unwrap();
-    let rpc_impl = RpcServerImpl::new(braid);
-    let _handle = server.start(rpc_impl.into_rpc());
-
-    let server_addr = "127.0.0.1:9000";
-    let target_uri = format!("http://{}", server_addr);
+    let Some(actual_addr) = spawn_test_server(braid).await else {
+        return;
+    };
+    let target_uri = format!("http://{}", actual_addr);
     let client: HttpClient = HttpClient::builder().build(target_uri).unwrap();
 
     let test_bead_2_json_str =
@@ -453,4 +435,44 @@ pub async fn test_cohort_count_rpc() {
         client.request("getcohortcount", ArrayParams::new()).await;
 
     assert_eq!(response_cohort_cnt.unwrap(), "4".to_string());
+}
+
+#[cfg(test)]
+async fn spawn_test_server(braid: Arc<RwLock<Braid>>) -> Option<SocketAddr> {
+    use std::io;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const PORT_CANDIDATES: &[u16] = &[
+        6682, 6683, 6684, 6685, 7000, 7001, 7002, 8889, 8890, 9000, 9001,
+    ];
+    static START_OFFSET: AtomicUsize = AtomicUsize::new(0);
+    let start = START_OFFSET.fetch_add(1, Ordering::Relaxed);
+    let mut last_error: Option<io::Error> = None;
+
+    for i in 0..PORT_CANDIDATES.len() {
+        let idx = (start + i) % PORT_CANDIDATES.len();
+        let addr = format!("127.0.0.1:{}", PORT_CANDIDATES[idx]);
+        match run_rpc_server(Arc::clone(&braid), &addr).await {
+            Ok(actual) => return Some(actual),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::AddrInUse | io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                last_error = Some(e);
+                continue;
+            }
+            Err(e) => panic!("failed to start test rpc server: {e}"),
+        }
+    }
+    if let Some(err) = last_error {
+        eprintln!(
+            "Skipping RPC test: unable to bind to loopback ports ({}).",
+            err
+        );
+        None
+    } else {
+        panic!("exhausted attempts to start rpc server for tests");
+    }
 }

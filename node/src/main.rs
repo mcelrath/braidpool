@@ -208,13 +208,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let rpc_addr = "127.0.0.1:6682"; // TODO: Load from config file
     if let Some(rpc_command) = args.command {
         let server_address = tokio::spawn(run_rpc_server(Arc::clone(&braid), rpc_addr));
-        let socket_address = server_address.await.unwrap().unwrap();
-        let _parsing_handle =
-            tokio::spawn(parse_arguments(rpc_command, socket_address.clone())).await;
+        let socket_address = server_address
+            .await
+            .expect("RPC server task panicked")
+            .map_err(|e| {
+                error!(error = ?e, addr = rpc_addr, "Failed to start RPC server");
+                Box::new(e) as Box<dyn Error>
+            })?;
+        let _ = tokio::spawn(parse_arguments(rpc_command, socket_address.clone())).await;
     } else {
         //running the rpc server and updating the reference counter
         //for shared ownership
-        let _server_handler = tokio::spawn(run_rpc_server(Arc::clone(&braid), rpc_addr)).await;
+        tokio::spawn(run_rpc_server(Arc::clone(&braid), rpc_addr))
+            .await
+            .expect("RPC server task panicked")
+            .map_err(|e| {
+                error!(error = ?e, addr = rpc_addr, "Failed to start RPC server");
+                Box::new(e) as Box<dyn Error>
+            })?;
     }
     // load beads from db (if present) and insert in braid here
     // Initializing the peer manager

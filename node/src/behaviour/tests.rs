@@ -433,10 +433,7 @@ async fn test_floodsub_message_propagation() {
 
     let result = rx.recv().await.unwrap();
     let received_bead: Result<Bead, bitcoin::consensus::DeserializeError> = deserialize(&result);
-    assert_eq!(
-        received_bead.unwrap().hash(),
-        test_bead_ref.clone().hash()
-    );
+    assert_eq!(received_bead.unwrap().hash(), test_bead_ref.clone().hash());
     _ = tokio::time::timeout(
         tokio::time::Duration::from_secs(20),
         futures::future::join_all(vec![swarm1_handle, swarm2_handle]),

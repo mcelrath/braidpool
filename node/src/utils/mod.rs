@@ -6,8 +6,8 @@ use crate::{
 };
 use ::bitcoin::BlockHash;
 use bitcoin::{
-    ecdsa::Signature, BlockHeader, BlockTime, BlockVersion,
-    CompactTarget, EcdsaSighashType, TxMerkleNode,
+    ecdsa::Signature, BlockHeader, BlockTime, BlockVersion, CompactTarget, EcdsaSighashType,
+    TxMerkleNode,
 };
 
 use crate::utils::timestamp::MicrosecondTimestamp;
@@ -80,8 +80,8 @@ pub fn create_test_bead(nonce: u32, prev_hash: Option<BlockHash>) -> Bead {
     let weak_target = CompactTarget::from_consensus(486604799);
     let min_target = CompactTarget::from_consensus(486604799);
     // Convert Unix timestamp (seconds) to microseconds since epoch
-  let timestamp_micros = MicrosecondTimestamp::from_secs(1653195600);
-  let time_val = timestamp_micros;
+    let timestamp_micros = MicrosecondTimestamp::from_secs(1653195600);
+    let time_val = timestamp_micros;
     let test_committed_metadata: CommittedMetadata = CommittedMetadata {
         comm_pub_key: public_key,
         min_target: min_target,

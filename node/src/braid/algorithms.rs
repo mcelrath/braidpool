@@ -272,7 +272,6 @@ pub fn cohorts(
         oldcohort.clear();
         if !cohort.is_empty() {
             result.push(cohort);
-            println!("Adding result cohort: {:?}", result.last());
         }
     }
 }
