@@ -23,3 +23,5 @@ venv
 *~
 .aider*
 */node_modules/*
+tests/old/
+tests/layouts/

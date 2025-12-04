@@ -1,4 +1,4 @@
-use crate::braid::benchmark_types::{ParentMap, BeadIdx};
+use crate::braid::benchmark_types::{BeadIdx, ParentMap};
 use rand::prelude::*;
 
 /// Simple, fast parent map generator that creates realistic DAG structures
@@ -8,7 +8,7 @@ pub struct SimpleParentGenerator {
     next_id: BeadIdx,
     parents: ParentMap,
     tips: Vec<BeadIdx>,
-    fan_out_range: (usize, usize),  // min/max parents per bead
+    fan_out_range: (usize, usize), // min/max parents per bead
 }
 
 impl SimpleParentGenerator {
@@ -22,7 +22,9 @@ impl SimpleParentGenerator {
         };
 
         // Create genesis bead
-        generator.parents.insert(0, std::collections::HashSet::new());
+        generator
+            .parents
+            .insert(0, std::collections::HashSet::new());
         generator.tips.push(0);
         generator.next_id = 1;
         generator
@@ -49,7 +51,9 @@ impl SimpleParentGenerator {
         let mut available_tips = self.tips.clone();
 
         for _ in 0..num_parents {
-            if available_tips.is_empty() { break; }
+            if available_tips.is_empty() {
+                break;
+            }
             let idx = self.rng.gen_range(0..available_tips.len());
             let parent = available_tips.swap_remove(idx);
             parents.insert(parent);

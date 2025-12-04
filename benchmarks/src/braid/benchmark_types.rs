@@ -1,5 +1,5 @@
-use std::collections::{HashMap, HashSet, VecDeque};
 use rand::prelude::*;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 pub type BeadIdx = usize;
 pub type NodeId = u32;
@@ -8,8 +8,8 @@ pub type ParentMap = HashMap<BeadIdx, HashSet<BeadIdx>>;
 #[derive(Debug, Clone)]
 pub struct SimpleNode {
     pub id: NodeId,
-    pub position: (f64, f64),  // (latitude, longitude) in radians
-    pub peers: Vec<(NodeId, f64)>,  // (peer_id, latency)
+    pub position: (f64, f64),      // (latitude, longitude) in radians
+    pub peers: Vec<(NodeId, f64)>, // (peer_id, latency)
     pub hashrate: f64,
     pub known_beads: ParentMap,
     pub tips: HashSet<BeadIdx>,
@@ -20,7 +20,7 @@ pub struct SimpleNetwork {
     pub nodes: Vec<SimpleNode>,
     pub current_time: f64,
     pub pending_transmissions: VecDeque<Transmission>,
-    pub parents: ParentMap,  // This is what we'll generate for the algorithm
+    pub parents: ParentMap, // This is what we'll generate for the algorithm
     pub next_bead_id: BeadIdx,
 }
 
@@ -41,8 +41,8 @@ impl SimpleNetwork {
         for i in 0..num_nodes {
             let node = SimpleNode {
                 id: i as NodeId,
-                position: (0.0, 0.0),  // Simplified - no need for real coordinates
-                peers: Vec::new(),      // Simplified - no peer connections needed
+                position: (0.0, 0.0), // Simplified - no need for real coordinates
+                peers: Vec::new(),    // Simplified - no peer connections needed
                 hashrate: 1.0 / num_nodes as f64,
                 known_beads: HashMap::new(),
                 tips: HashSet::new(),
@@ -89,9 +89,13 @@ impl SimpleNetwork {
         while self.parents.len() < target_beads {
             // Find the node with the earliest mining time
             let (next_node_idx, next_time, next_mining_time_delta) = {
-                let (idx, node) = self.nodes.iter()
+                let (idx, node) = self
+                    .nodes
+                    .iter()
                     .enumerate()
-                    .min_by(|(_, a), (_, b)| a.next_mining_time.partial_cmp(&b.next_mining_time).unwrap())
+                    .min_by(|(_, a), (_, b)| {
+                        a.next_mining_time.partial_cmp(&b.next_mining_time).unwrap()
+                    })
                     .unwrap();
 
                 let hashrate = node.hashrate;
@@ -144,7 +148,8 @@ impl SimpleNetwork {
 
                 // Update all nodes that know the parents
                 for node in &mut self.nodes {
-                    let parents_known = working_parents.iter()
+                    let parents_known = working_parents
+                        .iter()
                         .all(|parent_id| node.known_beads.contains_key(parent_id));
 
                     if parents_known {
@@ -194,8 +199,12 @@ impl SimpleNetwork {
         let mut sorted_pairs: Vec<_> = parent_distribution.iter().collect();
         sorted_pairs.sort_by_key(|&(k, _)| k);
         for (count, frequency) in sorted_pairs {
-            println!("    {} parents: {} beads ({:.1}%)", count, frequency,
-                    (*frequency as f64 / parents.len() as f64) * 100.0);
+            println!(
+                "    {} parents: {} beads ({:.1}%)",
+                count,
+                frequency,
+                (*frequency as f64 / parents.len() as f64) * 100.0
+            );
         }
 
         // Count genesis and tips
@@ -222,7 +231,8 @@ impl SimpleNetwork {
 
         if !fan_in_count.is_empty() {
             let fan_in_values: Vec<usize> = fan_in_count.values().copied().collect();
-            let avg_fan_in = fan_in_values.iter().sum::<usize>() as f64 / fan_in_values.len() as f64;
+            let avg_fan_in =
+                fan_in_values.iter().sum::<usize>() as f64 / fan_in_values.len() as f64;
             let max_fan_in = fan_in_values.iter().max().unwrap_or(&0);
 
             println!("Fan-in distribution (how many children each parent has):");
