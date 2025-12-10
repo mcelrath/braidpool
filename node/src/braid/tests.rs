@@ -7,6 +7,8 @@ use crate::{beadset, cohorts, relatives};
 use bitcoin::Work;
 use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
 use std::collections::{HashMap, HashSet};
+use std::thread;
+use std::time::Duration;
 
 /// Validates that caches are populated and all relationships are localized within cohorts
 fn check_cache(braid: &Braid) {
@@ -100,6 +102,56 @@ fn work(v: u64) -> Work {
 }
 
 #[test]
+pub fn test_orphanage_occupancy() {
+    // Construct a braid with a single genesis bead
+    let genesis = emit_Bead(&[]);
+    let parent = emit_Bead(&[&genesis]);
+    let orphan_child = emit_Bead(&[&parent]); // will be missing parent initially
+
+    let mut braid = Braid::new(vec![genesis.clone()]);
+
+    // Extend with parent so its hash is known
+    assert_eq!(braid.extend(&parent), AddBeadStatus::BeadAdded);
+
+    // Add orphaned child with missing parent (parent hash removed from index)
+    // Simulate missing parent by clearing index entry temporarily
+    let parent_hash = parent.hash();
+    let saved = braid.index.remove(&parent_hash).unwrap();
+    let status = braid.extend(&orphan_child);
+    assert_eq!(status, AddBeadStatus::ParentsMissing);
+
+    // Occupancy should be >0 immediately after orphan enters
+    let occ_now = braid.orphanage_occupancy(Duration::from_micros(1));
+    assert!(occ_now.is_some());
+
+    // Wait a bit to accumulate occupancy time
+    thread::sleep(Duration::from_millis(5));
+    let occ_avg = braid
+        .orphanage_occupancy(Duration::from_millis(1))
+        .expect("should have enough elapsed time");
+    assert!(
+        occ_avg >= 1.0,
+        "average occupancy should be at least 1, got {}",
+        occ_avg
+    );
+
+    // Restore parent so orphan can be adopted
+    braid.index.insert(parent_hash, saved);
+    braid.adopt_orphans(&parent_hash);
+
+    // After adoption, occupancy should go to 0
+    thread::sleep(Duration::from_millis(1));
+    let occ_after = braid
+        .orphanage_occupancy(Duration::from_millis(1))
+        .expect("should have elapsed time");
+    assert!(
+        occ_after < 1.0,
+        "occupancy should drop after adoption, got {}",
+        occ_after
+    );
+}
+
+#[test]
 pub fn test_extend_functionality() {
     // Create a braid with one bead.
     let test_bead_0 = emit_Bead(&[]);
@@ -147,7 +199,10 @@ pub fn test_extend_functionality() {
     // Verify braid integrity
     assert_eq!(test_braid.geneses, beadset![0]); // Still only one genesis
     assert_eq!(test_braid.tips, beadset![5]); // Bead 5 is the only tip
-    assert_eq!(test_braid.orphans.len(), 0); // No orphans
+    assert!(
+        test_braid.orphanage.is_empty() && test_braid.missing_parents.is_empty(),
+        "No orphans should remain"
+    );
 
     // CRITICAL TEST: Add bead 6 that references a parent from multiple cohorts back (bead 1)
     println!(
@@ -364,12 +419,12 @@ pub fn test_json_braid_end_to_end() {
         println!("Final cohort count: {}", braid.cohorts.len());
 
         // Verify all orphans have been processed
-        assert_eq!(
-            braid.orphans.len(),
-            0,
-            "File {}: All orphans should be processed. Remaining orphans: {}",
+        assert!(
+            braid.orphanage.is_empty() && braid.missing_parents.is_empty(),
+            "File {}: All orphans should be processed. Remaining: orphanage={}, missing_parents={}",
             filename,
-            braid.orphans.len()
+            braid.orphanage.len(),
+            braid.missing_parents.len()
         );
 
         // Verify all beads are present

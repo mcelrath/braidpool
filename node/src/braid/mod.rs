@@ -1,7 +1,8 @@
 use crate::bead::{Bead, BeadHash};
 use bitcoin::{Target, Work};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::mem;
+use std::time::{Duration, Instant};
 
 pub mod algorithms;
 
@@ -55,32 +56,50 @@ impl Default for ExtendStrategy {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug)]
 pub struct Braid {
     pub beads: Vec<Bead>,
     pub bead_work: BeadWork,
     pub tips: BeadSet,
     pub cohorts: Vec<Cohort>,
-    pub orphans: VecDeque<Bead>,
     pub geneses: BeadSet,
     pub index: HashMap<BeadHash, BeadIdx>,
     pub parents: Relatives,
     pub children: Relatives,
+    pub orphanage: HashMap<BeadHash, Bead>,
     // Performance optimization caches (public to crate only -- no one else should need them)
     pub(crate) ancestor_cache: Relatives,
     pub(crate) descendant_cache: Relatives,
     pub(crate) tail_cache: Vec<BeadSet>,
     pub(crate) cohort_map: HashMap<BeadIdx, CohortIdx>,
-    pub(crate) orphan_index: HashSet<BeadHash>,
-    pub(crate) waiting_orphans: HashMap<BeadHash, Vec<BeadHash>>,
-    pub(crate) pending_orphans: HashMap<BeadHash, PendingOrphan>,
+    // Orphan reverse index (parent hash -> orphan hash)
+    pub(crate) missing_parents: HashMap<BeadHash, HashSet<BeadHash>>,
     pub extend_strategy: ExtendStrategy,
+    occupancy_events: Vec<(Instant, u64, u64)>, // (time, occupancy, cumulative area micros)
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct PendingOrphan {
-    bead: Bead,
-    missing: usize,
+impl Default for Braid {
+    fn default() -> Self {
+        let now = Instant::now();
+        Braid {
+            beads: Vec::new(),
+            bead_work: HashMap::new(),
+            tips: HashSet::new(),
+            cohorts: Vec::new(),
+            geneses: HashSet::new(),
+            index: HashMap::new(),
+            parents: HashMap::new(),
+            children: HashMap::new(),
+            orphanage: HashMap::new(),
+            ancestor_cache: HashMap::new(),
+            descendant_cache: HashMap::new(),
+            tail_cache: Vec::new(),
+            cohort_map: HashMap::new(),
+            missing_parents: HashMap::new(),
+            extend_strategy: ExtendStrategy::default(),
+            occupancy_events: vec![(now, 0, 0)],
+        }
+    }
 }
 
 impl Braid {
@@ -102,7 +121,6 @@ impl Braid {
         for bead in beads {
             let _ = braid.extend(&bead);
         }
-        braid.process_orphans();
         braid
     }
 
@@ -125,6 +143,62 @@ impl Braid {
             .iter()
             .map(|h| self.index[h])
             .collect()
+    }
+
+    /// Records the occupancy integral up to `now`, appending an event.
+    fn occupancy_event(&mut self, now: Instant) {
+        if let Some((last_t, _, last_area)) = self.occupancy_events.last().copied() {
+            let delta = now.duration_since(last_t).as_micros();
+            let occ = self.orphanage.len() as u64;
+            // Saturate to avoid overflow; orphan stays ~1s, so micros is sufficient
+            let area = last_area
+                .saturating_add((delta.saturating_mul(occ as u128)).min(u64::MAX as u128) as u64);
+            self.occupancy_events.push((now, occ, area));
+        } else {
+            let occ = self.orphanage.len() as u64;
+            self.occupancy_events.push((now, occ, 0));
+        }
+    }
+
+    /// Returns the average orphanage occupancy over the last `interval`, using the event history.
+    /// Keeps all events needed for overlapping windows; prunes older ones beyond the maximum lookback observed.
+    pub fn orphanage_occupancy(&mut self, interval: Duration) -> Option<f64> {
+        let now = Instant::now();
+        self.occupancy_event(now);
+
+        let start = now
+            .checked_sub(interval)
+            .unwrap_or_else(|| Instant::now() - Duration::from_secs(0));
+
+        // Find the event just before or at `start`
+        let mut idx = None;
+        for (i, (t, _, _)) in self.occupancy_events.iter().enumerate().rev() {
+            if *t <= start {
+                idx = Some(i);
+                break;
+            }
+        }
+
+        let (prev_t, prev_occ, prev_area) = if let Some(i) = idx {
+            self.occupancy_events[i]
+        } else {
+            // No earlier event: use the first
+            self.occupancy_events.first().copied().unwrap()
+        };
+
+        let area_at_start = {
+            let delta = start.duration_since(prev_t).as_micros();
+            let incr = (delta.saturating_mul(prev_occ as u128)).min(u64::MAX as u128) as u64;
+            prev_area.saturating_add(incr)
+        };
+
+        let (_, _, area_now) = *self.occupancy_events.last().unwrap();
+        let window_area = area_now.saturating_sub(area_at_start);
+        let interval_us = interval.as_micros();
+        if interval_us == 0 {
+            return None;
+        }
+        Some(window_area as f64 / interval_us as f64)
     }
 
     /// Rebuild caches (ancestor, descendant, tail, cohort_map) for cohorts starting at `start_idx`.
@@ -175,133 +249,42 @@ impl Braid {
         }
     }
 
-    fn tail_covered_by_parents(&self, cohort_idx: CohortIdx, parent_indices: &BeadSet) -> bool {
-        if let Some(tail) = self.tail_cache.get(cohort_idx) {
-            if tail.is_empty() {
-                return true;
-            }
-            let tail_len = tail.len();
-            let mut matches = 0;
-            if parent_indices.len() < tail_len {
-                for parent in parent_indices {
-                    if tail.contains(parent) {
-                        matches += 1;
-                        if matches == tail_len {
-                            return true;
-                        }
-                    }
-                }
-            } else {
-                for &tail_idx in tail {
-                    if parent_indices.contains(&tail_idx) {
-                        matches += 1;
-                        if matches == tail_len {
-                            return true;
-                        }
-                    }
-                }
-            }
-            matches == tail_len
-        } else {
-            false
-        }
-    }
-
-    fn track_orphan(&mut self, bead: Bead, bead_hash: BeadHash, missing_parents: Vec<BeadHash>) {
-        if missing_parents.is_empty() {
-            self.orphans.push_back(bead);
-            return;
-        }
-        self.orphan_index.insert(bead_hash);
-        self.pending_orphans.insert(
-            bead_hash,
-            PendingOrphan {
-                bead,
-                missing: missing_parents.len(),
-            },
-        );
-        for parent_hash in missing_parents {
-            self.waiting_orphans
-                .entry(parent_hash)
-                .or_default()
-                .push(bead_hash);
-        }
-    }
-
-    fn wake_orphans(&mut self, parent_hash: &BeadHash) {
-        if let Some(children) = self.waiting_orphans.remove(parent_hash) {
+    fn adopt_orphans(&mut self, parent_hash: &BeadHash) {
+        if let Some(children) = self.missing_parents.remove(parent_hash) {
+            let now = Instant::now();
+            self.occupancy_event(now);
+            let mut ready = Vec::new();
             for child_hash in children {
-                if let Some(pending) = self.pending_orphans.get_mut(&child_hash) {
-                    if pending.missing > 0 {
-                        pending.missing -= 1;
-                    }
-                    if pending.missing == 0 {
-                        if let Some(pending_entry) = self.pending_orphans.remove(&child_hash) {
-                            self.orphans.push_back(pending_entry.bead);
-                            self.orphan_index.remove(&child_hash);
+                if let Some(orphan_bead) = self.orphanage.get(&child_hash) {
+                    let all_parents_present = orphan_bead
+                        .committed_metadata
+                        .parents
+                        .iter()
+                        .all(|p| self.index.contains_key(p));
+                    if all_parents_present {
+                        let ready_bead = self.orphanage.remove(&child_hash).unwrap();
+                        for p in &ready_bead.committed_metadata.parents {
+                            if let Some(bucket) = self.missing_parents.get_mut(p) {
+                                bucket.remove(&child_hash);
+                                if bucket.is_empty() {
+                                    self.missing_parents.remove(p);
+                                }
+                            }
                         }
+                        ready.push(ready_bead);
                     }
                 }
+            }
+            if !ready.is_empty() {
+                self.occupancy_event(now);
+            }
+            for bead in ready {
+                let _ = self.extend(&bead);
             }
         }
     }
 
     // ==================== Private: Graph Updates ====================
-
-    /// Helper to determine the earliest cohort index from which recomputation should start
-    /// for the Cached strategy, including backtracking logic.
-    fn find_recomputation_start_cohort_idx(&self, bead_parents: &BeadSet) -> CohortIdx {
-        let mut parent_indices: HashSet<usize> = bead_parents.clone();
-        let mut start_cohort_idx = self.cohorts.len();
-
-        if parent_indices.is_empty() {
-            return 0; // If no parents, effectively starts from genesis
-        }
-
-        // Find the earliest cohort containing a parent
-        for (i, cohort) in self.cohorts.iter().enumerate().rev() {
-            let found: Vec<usize> = parent_indices
-                .iter()
-                .copied()
-                .filter(|p| cohort.contains(p))
-                .collect();
-            if !found.is_empty() {
-                start_cohort_idx = i;
-                for p in found {
-                    parent_indices.remove(&p);
-                }
-            }
-            if parent_indices.is_empty() {
-                break; // All parents found
-            }
-        }
-        // If some parents were not found in existing cohorts, it means they are very old.
-        // Or if initial braid is empty, start from 0.
-        if !parent_indices.is_empty() || self.cohorts.is_empty() {
-            start_cohort_idx = 0;
-        }
-
-        // Backtrack for tip status change
-        if start_cohort_idx > 0 {
-            start_cohort_idx -= 1;
-        }
-
-        // Backtrack for thick cohorts
-        while start_cohort_idx > 0 {
-            let cohort = &self.cohorts[start_cohort_idx];
-            let has_internal_links = cohort.iter().any(|&b| {
-                self.parents
-                    .get(&b)
-                    .map_or(false, |parents| parents.iter().any(|p| cohort.contains(p)))
-            });
-            if has_internal_links {
-                start_cohort_idx -= 1;
-            } else {
-                break;
-            }
-        }
-        start_cohort_idx
-    }
 
     /// Attempts to extend the braid with the given bead.
     /// Returns true if the bead successfully extended the braid, false otherwise.
@@ -310,7 +293,7 @@ impl Braid {
         if self.index.contains_key(&bead_hash) {
             return AddBeadStatus::DuplicateBead;
         }
-        if self.orphan_index.contains(&bead_hash) || self.pending_orphans.contains_key(&bead_hash) {
+        if self.orphanage.contains_key(&bead_hash) {
             return AddBeadStatus::DuplicateBead;
         }
 
@@ -322,7 +305,16 @@ impl Braid {
             .copied()
             .collect();
         if !missing_parents.is_empty() {
-            self.track_orphan(bead.clone(), bead_hash, missing_parents);
+            let now = Instant::now();
+            self.occupancy_event(now);
+            self.orphanage.insert(bead_hash, bead.clone());
+            for parent_hash in missing_parents {
+                self.missing_parents
+                    .entry(parent_hash)
+                    .or_default()
+                    .insert(bead_hash);
+            }
+            self.occupancy_event(now);
             return AddBeadStatus::ParentsMissing;
         }
 
@@ -354,8 +346,6 @@ impl Braid {
             self.geneses.insert(new_bead_index);
         }
 
-        self.wake_orphans(&bead_hash);
-
         // --- Strategy-Specific Cohort Updates ---
         match self.extend_strategy {
             ExtendStrategy::Heuristic => {
@@ -375,7 +365,7 @@ impl Braid {
                     cohort.insert(new_bead_index);
                     self.cohorts.push(cohort);
                     self.rebuild_suffix(new_idx);
-                    self.process_orphans();
+                    self.adopt_orphans(&bead_hash);
                     return AddBeadStatus::BeadAdded;
                 }
 
@@ -408,11 +398,12 @@ impl Braid {
                     // If we span multiple cohorts (min < max), the effective tail of the merged group
                     // is the tail of the latest cohort (max).
                     const DENSE_TAIL_LIMIT: usize = 256;
-                    let tail_len = self.tail_cache[max].len();
+                    let tail = &self.tail_cache[max];
+                    let tail_len = tail.len();
                     let covers_tips = if tail_len > DENSE_TAIL_LIMIT {
                         false
                     } else {
-                        self.tail_covered_by_parents(max, parent_indices_set)
+                        tail.is_subset(parent_indices_set)
                     };
 
                     // Merge Spanned Cohorts if necessary
@@ -452,9 +443,33 @@ impl Braid {
 
                 let rebuild_start = idx_min.unwrap_or(insertion_idx);
                 self.rebuild_suffix(rebuild_start);
+                self.adopt_orphans(&bead_hash);
             }
             ExtendStrategy::Cached => {
-                let start_cohort_idx = self.find_recomputation_start_cohort_idx(&bead_parents);
+                // Determine earliest cohort that includes any parent (with a small backstep for internal links)
+                let start_cohort_idx = if self.cohorts.is_empty() || bead_parents.is_empty() {
+                    0
+                } else {
+                    let mut idx = 0;
+                    for (i, cohort) in self.cohorts.iter().enumerate() {
+                        if cohort.iter().any(|p| bead_parents.contains(p)) {
+                            idx = i;
+                            break;
+                        }
+                    }
+                    if idx > 0 {
+                        let cohort = &self.cohorts[idx];
+                        let has_internal_links = cohort.iter().any(|&b| {
+                            self.parents
+                                .get(&b)
+                                .map_or(false, |parents| parents.iter().any(|p| cohort.contains(p)))
+                        });
+                        if has_internal_links {
+                            idx -= 1;
+                        }
+                    }
+                    idx
+                };
 
                 let initial_cohort = self
                     .cohorts
@@ -476,6 +491,7 @@ impl Braid {
 
                 self.cohorts.extend(new_cohorts);
                 self.rebuild_suffix(start_cohort_idx);
+                self.adopt_orphans(&bead_hash);
             }
             ExtendStrategy::NoCache => {
                 let geneses = algorithms::geneses(&self.parents);
@@ -489,37 +505,11 @@ impl Braid {
                 self.tail_cache.clear();
                 self.cohort_map.clear();
                 self.rebuild_suffix(0);
+                self.adopt_orphans(&bead_hash);
             }
         }
-
-        self.process_orphans();
 
         AddBeadStatus::BeadAdded
-    }
-
-    /// Process orphan beads to see if any can now be added to the braid
-    /// This method checks if all parents of orphan beads are now available
-    /// and recursively extends the braid with those beads
-    /// FIXME this algorithm is O(n^2)
-    fn process_orphans(&mut self) {
-        while let Some(orphan_bead) = self.orphans.pop_front() {
-            match self.extend(&orphan_bead) {
-                AddBeadStatus::BeadAdded => {}
-                AddBeadStatus::ParentsMissing => {
-                    let missing = orphan_bead
-                        .committed_metadata
-                        .parents
-                        .iter()
-                        .filter(|&&h| !self.index.contains_key(&h))
-                        .copied()
-                        .collect::<Vec<_>>();
-                    self.track_orphan(orphan_bead.clone(), orphan_bead.hash(), missing);
-                }
-                AddBeadStatus::DuplicateBead | AddBeadStatus::InvalidBead => {
-                    // Ignore duplicates from reprocessing
-                }
-            }
-        }
     }
 
     // FIXME What is this for? Is it just overly defensive?
