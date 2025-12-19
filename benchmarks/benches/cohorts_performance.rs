@@ -2,7 +2,7 @@ use bitcoin::pow::CompactTarget;
 use bitcoin::{BlockHash, BlockHeader, BlockTime, BlockVersion, TxMerkleNode};
 use braidpool_benchmarks::braid::{
     fit_cubic, generate_parents_for_scenario, ParentGeneratorKind, ParentMap, TimingPoint,
-    DEFAULT_SCENARIOS, EXTEND_SCENARIOS,
+    DEFAULT_SCENARIOS,
 };
 use criterion::{black_box, AxisScale, BatchSize, BenchmarkId, Criterion, PlotConfiguration};
 use node::bead::Bead;
@@ -21,7 +21,17 @@ const EXTEND_STRATEGIES: [ExtendStrategy; 3] = [
     ExtendStrategy::NoCache,
 ];
 
-const ITERATIONS_DEFAULT: usize = 12;
+// Smaller scenarios for quick iterations; switch to the full set with --full-scenarios.
+const QUICK_SCENARIOS: &[(usize, f64)] = &[
+    (200, 2.0),
+    (242, 2.42),
+    (500, 5.0),
+    (1000, 10.0),
+    //    (5000, 50.0),
+    //    (10000, 100.0),
+];
+
+const ITERATIONS_DEFAULT: usize = 8;
 
 #[derive(Clone, Copy, Debug)]
 enum Mode {
@@ -53,6 +63,10 @@ struct BenchConfig {
     seed: u64,
     iterations: usize,
     samples: usize,
+    measurement_time_ms: u64,
+    max_beads: usize,
+    run_criterion: bool,
+    quick_scenarios: bool,
 }
 
 impl BenchConfig {
@@ -62,7 +76,15 @@ impl BenchConfig {
             generator: ParentGeneratorKind::default(),
             seed: 42,
             iterations: ITERATIONS_DEFAULT,
-            samples: 40,
+            samples: 12,
+            // Short default keeps a full run under a couple of minutes; override for deeper stats.
+            measurement_time_ms: 250,
+            // Filter out very large scenarios by default to keep quick iterations.
+            max_beads: 20_000,
+            // Skip Criterion by default; enable with --criterion for full statistics.
+            run_criterion: false,
+            // Use the reduced scenario set unless overridden.
+            quick_scenarios: true,
         };
 
         let mut args = env::args().skip(1);
@@ -109,6 +131,30 @@ impl BenchConfig {
                         .parse()
                         .unwrap_or_else(|_| panic!("invalid samples value"));
                 }
+            } else if let Some(value) = arg.strip_prefix("--time-ms=") {
+                config.measurement_time_ms = value
+                    .parse()
+                    .unwrap_or_else(|_| panic!("invalid time-ms value"));
+            } else if arg == "--time-ms" {
+                if let Some(value) = args.next() {
+                    config.measurement_time_ms = value
+                        .parse()
+                        .unwrap_or_else(|_| panic!("invalid time-ms value"));
+                }
+            } else if let Some(value) = arg.strip_prefix("--max-beads=") {
+                config.max_beads = value
+                    .parse()
+                    .unwrap_or_else(|_| panic!("invalid max-beads value"));
+            } else if arg == "--max-beads" {
+                if let Some(value) = args.next() {
+                    config.max_beads = value
+                        .parse()
+                        .unwrap_or_else(|_| panic!("invalid max-beads value"));
+                }
+            } else if arg == "--criterion" || arg == "--run-criterion" {
+                config.run_criterion = true;
+            } else if arg == "--full-scenarios" || arg == "--full" {
+                config.quick_scenarios = false;
             } else {
                 // Ignore unrecognized arguments that cargo may append (`--bench`, filters, etc.)
                 continue;
@@ -119,8 +165,20 @@ impl BenchConfig {
         if config.samples < 10 {
             config.samples = 10;
         }
+        // Keep a floor so Criterion doesn't panic on zero-length measurements.
+        if config.measurement_time_ms < 50 {
+            config.measurement_time_ms = 50;
+        }
 
         config
+    }
+
+    fn scenario_set(&self) -> &[(usize, f64)] {
+        if self.quick_scenarios {
+            QUICK_SCENARIOS
+        } else {
+            DEFAULT_SCENARIOS
+        }
     }
 }
 
@@ -132,16 +190,21 @@ fn benchmark_cohorts_performance(c: &mut Criterion, config: BenchConfig) {
 }
 
 fn run_cohorts_mode(c: &mut Criterion, config: &BenchConfig) {
-    let mut group = c.benchmark_group("cohorts_performance");
-    group
-        .plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic))
-        .sample_size(config.samples)
-        .measurement_time(Duration::from_secs(4));
+    let mut group = config.run_criterion.then(|| {
+        let mut g = c.benchmark_group("cohorts_performance");
+        g.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic))
+            .sample_size(config.samples)
+            .measurement_time(Duration::from_millis(config.measurement_time_ms));
+        g
+    });
 
     let mut timings = Vec::new();
-    let scenarios: Vec<_> = DEFAULT_SCENARIOS
+    let scenarios: Vec<_> = config
+        .scenario_set()
         .par_iter()
-        .map(|&(total, avg)| {
+        .copied()
+        .filter(|(total, _)| *total <= config.max_beads)
+        .map(|(total, avg)| {
             let parents = generate_parents_for_scenario(
                 config.generator,
                 total,
@@ -160,6 +223,14 @@ fn run_cohorts_mode(c: &mut Criterion, config: &BenchConfig) {
         })
         .collect();
 
+    if scenarios.is_empty() {
+        println!(
+            "No cohort scenarios selected (max_beads: {}). Nothing to benchmark.",
+            config.max_beads
+        );
+        return;
+    }
+
     let mut table_rows = Vec::new();
 
     for (total, avg, actual_avg, parents, children) in scenarios {
@@ -173,23 +244,29 @@ fn run_cohorts_mode(c: &mut Criterion, config: &BenchConfig) {
         let parents_arc = Arc::new(parents);
         let children_arc = Arc::new(children);
         let bench_id = BenchmarkId::new("cohorts", format!("{}w{}", total, avg));
-        group.bench_with_input(bench_id, &(total, avg), move |b, _| {
-            let parents_clone = parents_arc.clone();
-            let children_clone = children_arc.clone();
-            b.iter(|| {
-                let mut cache = Relatives::new();
-                let initial = Cohort::new();
-                black_box(algorithms::cohorts(
-                    &parents_clone,
-                    &children_clone,
-                    &initial,
-                    &mut cache,
-                ))
+        if let Some(g) = group.as_mut() {
+            g.bench_with_input(bench_id, &(total, avg), move |b, _| {
+                let parents_clone = parents_arc.clone();
+                let children_clone = children_arc.clone();
+                b.iter(|| {
+                    let mut cache = Relatives::new();
+                    let initial = Cohort::new();
+                    black_box(algorithms::cohorts(
+                        &parents_clone,
+                        &children_clone,
+                        &initial,
+                        &mut cache,
+                    ))
+                });
             });
-        });
+        }
     }
 
-    group.finish();
+    if let Some(g) = group {
+        g.finish();
+    } else {
+        println!("(Criterion runs skipped; summary-only mode)");
+    }
 
     print_cohorts_summary(&table_rows, &timings, config);
 }
@@ -211,11 +288,20 @@ fn print_cohorts_summary(
     timings: &[TimingPoint],
     config: &BenchConfig,
 ) {
+    let scenario_label = if config.quick_scenarios {
+        "quick"
+    } else {
+        "full"
+    };
     println!(
-        "\\nCohorts benchmark(mode: {}, generator: {}, iterations: {})",
+        "\\nCohorts benchmark(mode: {}, generator: {}, iterations: {}, samples: {}, time: {}ms, max_beads: {}, scenarios: {})",
         config.mode.name(),
         config.generator.name(),
-        config.iterations
+        config.iterations,
+        config.samples,
+        config.measurement_time_ms,
+        config.max_beads,
+        scenario_label
     );
     println!(
         "| {:>10} | {:>14} | {:>18} | {:>16} |",
@@ -238,23 +324,36 @@ fn print_cohorts_summary(
 }
 
 fn run_extend_mode(c: &mut Criterion, config: &BenchConfig) {
-    let mut group = c.benchmark_group("extend_strategies");
-    group
-        .plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic))
-        .sample_size(config.samples)
-        .measurement_time(Duration::from_secs(4));
+    let mut group = config.run_criterion.then(|| {
+        let mut g = c.benchmark_group("extend_strategies");
+        g.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic))
+            .sample_size(config.samples)
+            .measurement_time(Duration::from_millis(config.measurement_time_ms));
+        g
+    });
 
     let mut summary = Vec::new();
     let mut timing_map: HashMap<ExtendStrategy, Vec<TimingPoint>> = HashMap::new();
 
-    let scenarios: Vec<_> = EXTEND_SCENARIOS
+    let scenarios: Vec<_> = config
+        .scenario_set()
         .par_iter()
-        .map(|&(total, avg)| {
+        .copied()
+        .filter(|(total, _)| *total <= config.max_beads)
+        .map(|(total, avg)| {
             let (braid, next_bead, actual_avg) =
                 build_braid_for_scenario(total, avg, config.generator, config.seed + total as u64);
             (total, avg, actual_avg, braid, next_bead)
         })
         .collect();
+
+    if scenarios.is_empty() {
+        println!(
+            "No extend scenarios selected (max_beads: {}). Nothing to benchmark.",
+            config.max_beads
+        );
+        return;
+    }
 
     for (total, avg, actual_avg, braid, next_bead) in scenarios {
         let mut scenario_times = HashMap::new();
@@ -269,18 +368,20 @@ fn run_extend_mode(c: &mut Criterion, config: &BenchConfig) {
 
             let bench_id =
                 BenchmarkId::new(&format!("{:?}", strategy), format!("{}w{}", total, avg));
-            let braid_template = braid.clone();
-            let bead_template = next_bead.clone();
-            group.bench_with_input(bench_id, &(total, avg), move |b, _| {
-                b.iter_batched(
-                    || (braid_template.clone(), bead_template.clone()),
-                    |(mut bra, bead)| {
-                        bra.extend_strategy = strategy;
-                        black_box(bra.extend(black_box(&bead)))
-                    },
-                    BatchSize::SmallInput,
-                );
-            });
+            if let Some(g) = group.as_mut() {
+                let braid_template = braid.clone();
+                let bead_template = next_bead.clone();
+                g.bench_with_input(bench_id, &(total, avg), move |b, _| {
+                    b.iter_batched(
+                        || (braid_template.clone(), bead_template.clone()),
+                        |(mut bra, bead)| {
+                            bra.extend_strategy = strategy;
+                            black_box(bra.extend(black_box(&bead)))
+                        },
+                        BatchSize::SmallInput,
+                    );
+                });
+            }
         }
 
         let mut ordered_times = [0.0f64; 3];
@@ -290,7 +391,11 @@ fn run_extend_mode(c: &mut Criterion, config: &BenchConfig) {
         summary.push((total, avg, actual_avg, ordered_times));
     }
 
-    group.finish();
+    if let Some(g) = group {
+        g.finish();
+    } else {
+        println!("(Criterion runs skipped; summary-only mode)");
+    }
 
     print_extend_summary(&summary);
     print_extend_regression(&timing_map, config);
@@ -412,10 +517,20 @@ fn print_extend_regression(
     timings: &HashMap<ExtendStrategy, Vec<TimingPoint>>,
     config: &BenchConfig,
 ) {
+    let scenario_label = if config.quick_scenarios {
+        "quick"
+    } else {
+        "full"
+    };
     println!(
-        "\nRegression (mode: {}, generator: {}):",
+        "\nRegression (mode: {}, generator: {}, iterations: {}, samples: {}, time: {}ms, max_beads: {}, scenarios: {}):",
         config.mode.name(),
-        config.generator.name()
+        config.generator.name(),
+        config.iterations,
+        config.samples,
+        config.measurement_time_ms,
+        config.max_beads,
+        scenario_label
     );
     for &strategy in &EXTEND_STRATEGIES {
         if let Some(points) = timings.get(&strategy) {

@@ -56,7 +56,7 @@ impl Default for ExtendStrategy {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Braid {
     pub beads: Vec<Bead>,
     pub bead_work: BeadWork,
